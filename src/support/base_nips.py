@@ -1,6 +1,8 @@
 ### Core ###
 import torch
 import torch.nn as nn
+from functools import reduce
+from operator import mul
 
 
 def cprint(str):
@@ -189,6 +191,75 @@ def batched_vector_interpolation(vector, points, downsampling_factor=1):
     return vector_on_grid
 
 
+def batched_vector_interpolation_adaptive(vector, points, downsampling_factor=1):
+    """
+    batched_vector_interpolation with:
+     - adaptive grid size per dimension
+     - same downsampling factor everywhere
+    """
+    bts = points.size(0)
+    dim = points.size(1)
+    dgs = points.size()[2:]
+    nbp = reduce(mul, dgs)
+
+    if dim == 2:
+        assert False, 'TO BE IMPLEMENTED'
+
+    elif dim == 3:
+
+        points = points.permute(0, 2, 3, 4, 1).view(bts, -1, 3)
+        vector = vector.permute(0, 2, 3, 4, 1).view(bts, -1, 3)
+
+        x = points[:, :, 0]
+        y = points[:, :, 1]
+        z = points[:, :, 2]
+
+        u = (x + 1.0) / float(downsampling_factor) - 1.0
+        v = (y + 1.0) / float(downsampling_factor) - 1.0
+        w = (z + 1.0) / float(downsampling_factor) - 1.0
+
+        u1 = torch.floor(u.detach())
+        v1 = torch.floor(v.detach())
+        w1 = torch.floor(w.detach())
+
+        u1 = torch.clamp(u1, 0.0, dgs[0] - 1.0)
+        v1 = torch.clamp(v1, 0.0, dgs[1] - 1.0)
+        w1 = torch.clamp(w1, 0.0, dgs[2] - 1.0)
+        u2 = torch.clamp(u1 + 1, 0.0, dgs[0] - 1.0)
+        v2 = torch.clamp(v1 + 1, 0.0, dgs[1] - 1.0)
+        w2 = torch.clamp(w1 + 1, 0.0, dgs[2] - 1.0)
+
+        fu = (u - u1).view(bts, nbp, 1).expand(bts, nbp, dim)
+        fv = (v - v1).view(bts, nbp, 1).expand(bts, nbp, dim)
+        fw = (w - w1).view(bts, nbp, 1).expand(bts, nbp, dim)
+        gu = (u1 + 1 - u).view(bts, nbp, 1).expand(bts, nbp, dim)
+        gv = (v1 + 1 - v).view(bts, nbp, 1).expand(bts, nbp, dim)
+        gw = (w1 + 1 - w).view(bts, nbp, 1).expand(bts, nbp, dim)
+
+        u1 = u1.long()
+        v1 = v1.long()
+        w1 = w1.long()
+        u2 = u2.long()
+        v2 = v2.long()
+        w2 = w2.long()
+
+        vector_on_grid = (
+                batch_index_select(vector, 1, u1 * dgs[1] * dgs[2] + v1 * dgs[1] + w1) * gu * gv * gw +
+                batch_index_select(vector, 1, u1 * dgs[1] * dgs[2] + v1 * dgs[1] + w2) * gu * gv * fw +
+                batch_index_select(vector, 1, u1 * dgs[1] * dgs[2] + v2 * dgs[1] + w1) * gu * fv * gw +
+                batch_index_select(vector, 1, u1 * dgs[1] * dgs[2] + v2 * dgs[1] + w2) * gu * fv * fw +
+                batch_index_select(vector, 1, u2 * dgs[1] * dgs[2] + v1 * dgs[1] + w1) * fu * gv * gw +
+                batch_index_select(vector, 1, u2 * dgs[1] * dgs[2] + v1 * dgs[1] + w2) * fu * gv * fw +
+                batch_index_select(vector, 1, u2 * dgs[1] * dgs[2] + v2 * dgs[1] + w1) * fu * fv * gw +
+                batch_index_select(vector, 1, u2 * dgs[1] * dgs[2] + v2 * dgs[1] + w2) * fu * fv * fw)
+        vector_on_grid = vector_on_grid.view(bts, dgs[0], dgs[1], dgs[2], dim).permute(0, 4, 1, 2, 3)
+
+    else:
+        assert False, 'Impossible dimension'
+
+    return vector_on_grid
+
+
 def batched_scalar_interpolation(scalars, points):
     bts = points.size(0)
     dim = points.size(1)
@@ -275,6 +346,72 @@ def batched_scalar_interpolation(scalars, points):
                 scalars[0, u2.view(-1), v2.view(-1), w1.view(-1)] * fu.view(-1) * fv.view(-1) * gw.view(-1) +
                 scalars[0, u2.view(-1), v2.view(-1), w2.view(-1)] * fu.view(-1) * fv.view(-1) * fw.view(-1))
         scalars_on_points = scalars_on_points.view(bts, 1, gs, gs, gs)
+
+    else:
+        assert False, 'Impossible dimension'
+
+    return scalars_on_points
+
+
+def batched_scalar_interpolation_adaptive(scalars, points):
+    """
+    batched_scalar_interpolation with adaptive grid size per dimension
+    """
+    bts = points.size(0)
+    dim = points.size(1)
+    sca_dgs = scalars.size()[2:]    # scalars resolution
+    assert len(set([sdg // pdg for pdg, sdg in zip(points.size()[2:] , sca_dgs)])) == 1, \
+        "downsampling ratio must be the same in every direction"
+    assert scalars.size(2) >= points.size(2), "points must be downsampled wrt scalars"
+
+    if dim == 2:
+        assert False, 'TO BE IMPLEMENTED'
+
+    elif dim == 3:
+        # --------------- UPSAMPLE
+        dsf = scalars.size(2) // points.size(2)
+        if not dsf == 1:
+            points = nn.functional.interpolate(points, size=tuple(sca_dgs), mode='trilinear', align_corners=True)
+
+        u = points[:, 0]
+        v = points[:, 1]
+        w = points[:, 2]
+
+        u1 = torch.floor(u.detach())
+        v1 = torch.floor(v.detach())
+        w1 = torch.floor(w.detach())
+
+        u1 = torch.clamp(u1, 0, sca_dgs[0] - 1)
+        v1 = torch.clamp(v1, 0, sca_dgs[1] - 1)
+        w1 = torch.clamp(w1, 0, sca_dgs[2] - 1)
+        u2 = torch.clamp(u1 + 1, 0, sca_dgs[0] - 1)
+        v2 = torch.clamp(v1 + 1, 0, sca_dgs[1] - 1)
+        w2 = torch.clamp(w1 + 1, 0, sca_dgs[2] - 1)
+
+        fu = (u - u1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])         # weigth (distance) to x-coordinate after grid point
+        fv = (v - v1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])         # weigth (distance) to y-coordinate after grid point
+        fw = (w - w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])         # weigth (distance) to z-coordinate after grid point
+        gu = (u1 + 1 - u).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])     # weigth (distance) to x-coordinate after grid point
+        gv = (v1 + 1 - v).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])     # weigth (distance) to x-coordinate after grid point
+        gw = (w1 + 1 - w).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])     # weigth (distance) to x-coordinate after grid point
+
+        u1 = u1.long()        # scalar x-coordinates before grid point
+        v1 = v1.long()        # scalar y-coordinates before grid point
+        w1 = w1.long()        # scalar z-coordinates before grid point
+        u2 = u2.long()        # scalar x-coordinates after grid point
+        v2 = v2.long()        # scalar y-coordinates after grid point
+        w2 = w2.long()        # scalar z-coordinates after grid point
+
+        scalars_on_points = (batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] + sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] + sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] + sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] + sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] + sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] + sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] + sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] + sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * gw)
+
+        scalars_on_points = scalars_on_points.view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])
 
     else:
         assert False, 'Impossible dimension'

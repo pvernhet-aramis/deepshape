@@ -1,5 +1,5 @@
-from support.base_nips import *
-from in_out.data_nips import *
+from src.support.base_nips import *
+from src.in_out.data_nips import *
 from torchvision.utils import save_image
 
 

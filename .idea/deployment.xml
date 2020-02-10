@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="Aramis 02 - MICCAI">
+    <serverData>
+      <paths name="Aramis 01 - MICCAI">
+        <serverdata>
+          <mappings>
+            <mapping deploy="Scripts/Ongoing/MICCAI2020/deepshape" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Aramis 02 - MICCAI">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/Scripts/Ongoing/MICCAI2020/deepshape" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Aramis 04 - MICCAI">
+        <serverdata>
+          <mappings>
+            <mapping deploy="Scripts/Ongoing/MICCAI2020/deepshape" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

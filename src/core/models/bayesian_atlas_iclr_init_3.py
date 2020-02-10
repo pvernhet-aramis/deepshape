@@ -14,9 +14,9 @@ from torch.optim import Adam, LBFGS
 from torch.optim.lr_scheduler import StepLR
 
 ### IMPORTS ###
-from in_out.datasets_iclr import *
-from support.nets_iclr_init_3 import MetamorphicAtlas
-from support.base_iclr import *
+from src.in_out.datasets_miccai import *
+from src.support.nets_iclr_init_3 import MetamorphicAtlas
+from src.support.base_miccai import *
 
 if __name__ == '__main__':
 
