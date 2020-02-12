@@ -1,7 +1,8 @@
 import os
 import torch
-import nibabel as nib
+import numpy as np
 import argparse
+import nibabel as nib
 from multiprocessing import Pool
 
 parser = argparse.ArgumentParser(description='Tensor stock.')
@@ -44,6 +45,18 @@ for t in t_:
         fn_args.append((os.path.join(path_to_nifti_t, elt + '.nii.gz'), os.path.join(path_to_tensor_t, elt + '.pt')))
 
 
+# ---------------------------------------------------------------
+# SAVE GLOBAL AFFINE PARAMETER (assuming all affine parameters are identical)
+
+random_nifti_reference, _ = fn_args[0]     # random nifti path | path_to_tensor_train
+np_affine = nib.load(random_nifti_reference).affine
+np.save(file=os.path.join(path_to_tensor_train, 'affine.npy'), arr=np_affine)
+np.save(file=os.path.join(path_to_tensor_test, 'affine.npy'), arr=np_affine)
+with np.printoptions(precision=3, suppress=True):
+    print('>> Affine matrix saved :\n', np_affine)
+print('>> Creating 3D Tensors ...')
+
+
 def launch(l_args):
     import torch
     import nibabel as nib
@@ -56,7 +69,8 @@ def launch(l_args):
     # H, W, D = tensor_affined.size()
     tensor_red = torch.nn.functional.interpolate(tensor_affined.unsqueeze(0).unsqueeze(0),
                                                  scale_factor=1./REDUCTION,
-                                                 mode='trilinear').squeeze(0) if REDUCTION > 1 \
+                                                 mode='trilinear',
+                                                 align_corners=False).squeeze(0) if REDUCTION > 1 \
         else tensor_affined.unsqueeze(0)
     torch.save(tensor_red.detach(), path_out)
 

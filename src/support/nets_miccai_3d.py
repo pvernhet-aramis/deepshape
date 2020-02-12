@@ -192,7 +192,6 @@ class Encoder3d__5_down(nn.Module):
     """
     in: (in_grid_size_x, in_grid_size_y, in_grid_size_z)
     out: latent_dimension
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**5
     """
 
     def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
@@ -219,7 +218,7 @@ class Encoder3d__5_down(nn.Module):
         self.linear_logv_1__a = Linear_Tanh(32 * n, 8 * n, bias=False)
         self.linear_logv_2__a = nn.Linear(8 * n, latent_dimension__a, bias=False)
 
-        print('>> Encoder2d__final has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__5_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -241,7 +240,6 @@ class DeepDecoder3d__5_up(nn.Module):
     """
     in: latent_dimension
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**5
     """
 
     def __init__(self, latent_dimension, out_channels, out_grid_size):
@@ -279,7 +277,6 @@ class Encoder3d__4_down(nn.Module):
     """
     in: (in_grid_size_x, in_grid_size_y, in_grid_size_z)
     out: latent_dimension
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**5
     """
 
     def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
@@ -305,7 +302,7 @@ class Encoder3d__4_down(nn.Module):
         self.linear_logv_1__a = Linear_Tanh(16 * n, 8 * n, bias=False)
         self.linear_logv_2__a = nn.Linear(8 * n, latent_dimension__a, bias=False)
 
-        print('>> Encoder2d__final has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__4_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -325,7 +322,6 @@ class DeepDecoder3d__4_up(nn.Module):
     """
     in: latent_dimension
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**4
     """
 
     def __init__(self, latent_dimension, out_channels, out_grid_size):
@@ -339,7 +335,7 @@ class DeepDecoder3d__4_up(nn.Module):
         self.up2 = ConvTranspose3d_Tanh(16, 8, bias=False)
         self.up3 = ConvTranspose3d_Tanh(8, 4, bias=False)
         self.up4 = ConvTranspose3d_Tanh(4, out_channels, bias=False)
-        print('>> DeepDecoder2d__final has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> DeepDecoder2d__4_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         batch_size = x.size(0)
@@ -360,7 +356,6 @@ class Encoder3d__3_down(nn.Module):
     """
     in: (in_grid_size_x, in_grid_size_y, in_grid_size_z)
     out: latent_dimension
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**5
     """
 
     def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
@@ -385,7 +380,7 @@ class Encoder3d__3_down(nn.Module):
         self.linear_logv_1__a = Linear_Tanh(8 * n, 4 * n, bias=False)
         self.linear_logv_2__a = nn.Linear(4 * n, latent_dimension__a, bias=False)
 
-        print('>> Encoder2d__final has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__3_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -405,7 +400,6 @@ class DeepDecoder3d__3_up(nn.Module):
     """
     in: latent_dimension
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
-    ONLY VALID FOR DATA SIZES MULTIPLES OF 2**5
     """
 
     def __init__(self, latent_dimension, out_channels, out_grid_size):
@@ -418,7 +412,7 @@ class DeepDecoder3d__3_up(nn.Module):
         self.up1 = ConvTranspose3d_Tanh(16, 8, bias=False)
         self.up2 = ConvTranspose3d_Tanh(8, 4, bias=False)
         self.up3 = ConvTranspose3d_Tanh(4, out_channels, bias=False)
-        print('>> DeepDecoder2d__5_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> DeepDecoder2d__3_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         batch_size = x.size(0)
@@ -432,6 +426,65 @@ class DeepDecoder3d__3_up(nn.Module):
 
 
 # -------------------------------------------
+# 2 and 1 convolutions networks (for upscaling very low dimensions)
+
+
+class DeepDecoder3d__2_up(nn.Module):
+    """
+    in: latent_dimension
+    out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
+    """
+
+    def __init__(self, latent_dimension, out_channels, out_grid_size):
+        nn.Module.__init__(self)
+        self.inner_grid_size = [int(elt * 2 ** -2) for elt in out_grid_size]
+        self.n = int(reduce(mul, self.inner_grid_size))
+        self.latent_dimension = latent_dimension
+        self.linear1 = Linear_Tanh(latent_dimension, 4 * self.n, bias=False)
+        self.linear2 = Linear_Tanh(4 * self.n, 8 * self.n, bias=False)
+        self.linear3 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
+        self.up1 = ConvTranspose3d_Tanh(16, 4, bias=False)
+        self.up2 = ConvTranspose3d_Tanh(4, out_channels, bias=False)
+        print('>> DeepDecoder2d__2_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        expanded_size = tuple([batch_size, 16] + self.inner_grid_size)
+        x = self.linear1(x)
+        x = self.linear2(x)
+        x = self.linear3(x).view(expanded_size)
+        x = self.up1(x)
+        x = self.up2(x)
+        return x
+
+
+class DeepDecoder3d__1_up(nn.Module):
+    """
+    in: latent_dimension
+    out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
+    """
+
+    def __init__(self, latent_dimension, out_channels, out_grid_size):
+        nn.Module.__init__(self)
+        self.inner_grid_size = [int(elt * 2 ** -1) for elt in out_grid_size]
+        self.n = int(reduce(mul, self.inner_grid_size))
+        self.latent_dimension = latent_dimension
+        self.linear1 = Linear_Tanh(latent_dimension, 4 * self.n, bias=False)
+        self.linear2 = Linear_Tanh(4 * self.n, 8 * self.n, bias=False)
+        self.linear3 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
+        self.up1 = ConvTranspose3d_Tanh(16, out_channels, bias=False)
+        print('>> DeepDecoder2d__1_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        expanded_size = tuple([batch_size, 16] + self.inner_grid_size)
+        x = self.linear1(x)
+        x = self.linear2(x)
+        x = self.linear3(x).view(expanded_size)
+        x = self.up1(x)
+        return x
+
+# -------------------------------------------
 
 
 class MetamorphicAtlas(nn.Module):
@@ -439,12 +492,11 @@ class MetamorphicAtlas(nn.Module):
     Metamorphic Atlas compatible with dimension = 3
     """
 
-    def __init__(self, template_intensities, number_of_time_points, downsampling_factor, downsampling_power,
+    def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
                  latent_dimension__s, latent_dimension__a,
                  kernel_width__s, kernel_width__a,
                  initial_lambda_square__s=1., initial_lambda_square__a=1.):
         nn.Module.__init__(self)
-        # TODO: VARIABLE LENGTH GRID
         # TODO: CHANGE NETWORK ACCORDING TO RESOLUTION ...
 
         self.decode_count = 0
@@ -454,11 +506,12 @@ class MetamorphicAtlas(nn.Module):
         self.latent_dimension__s = latent_dimension__s
         self.latent_dimension__a = latent_dimension__a
 
-        self.downsampling_power = downsampling_power                # measures to how much depth network can go
-        assert self.downsampling_power in [0, 1, 2], "Only supports initial downsampling by 1, 2 and 4"
-        self.downsampling_factor = downsampling_factor
+        self.downsampling_data = downsampling_data               # measures to how much depth network can go
+        assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
+        self.downsampling_grid = downsampling_grid
+        assert self.downsampling_data in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
         self.grid_size = tuple(template_intensities.size()[2:])
-        self.downsampled_grid_size = tuple([gs // self.downsampling_factor for gs in self.grid_size])
+        self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
 
         self.v_star_average = torch.zeros(tuple([self.dimension] + list(self.downsampled_grid_size)))
         self.n_star_average = torch.zeros(tuple([1] + list(self.grid_size)))
@@ -469,31 +522,54 @@ class MetamorphicAtlas(nn.Module):
         self.kernel_width__s = kernel_width__s
         self.kernel_width__a = kernel_width__a
 
-        # self.template_intensities = template_intensities
         self.template_intensities = nn.Parameter(template_intensities)
         print('>> Template intensities are {} = {} parameters'.format((template_intensities.size()[1:]),
                                                                       template_intensities.view(-1).size(0)))
-        if self.downsampling_power == 0:
+        if self.downsampling_data == 1:
             # ---------- 5 convolutions available
             self.encoder = Encoder3d__5_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
                                              init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
             self.decoder__a = DeepDecoder3d__5_up(latent_dimension__a, 1, self.grid_size)
-            self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, 3, self.downsampled_grid_size)
-        elif self.downsampling_power == 1:
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            else:
+                raise RuntimeError
+
+        elif self.downsampling_data == 2:
             # ---------- 4 convolutions available
             self.encoder = Encoder3d__4_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
                                              init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
             self.decoder__a = DeepDecoder3d__4_up(latent_dimension__a, 1, self.grid_size)
-            self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, 3, self.downsampled_grid_size)
-        elif self.downsampling_power == 2:
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            else:
+                raise RuntimeError
+
+        elif self.downsampling_data == 4:
             # ---------- 3 convolutions available
             self.encoder = Encoder3d__3_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
                                              init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
             self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size)
-            self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, 3, self.downsampled_grid_size)
+            else:
+                raise RuntimeError
+
         else:
             raise RuntimeError
 
@@ -519,7 +595,7 @@ class MetamorphicAtlas(nn.Module):
         dim = self.dimension
         gs = self.grid_size                 # (tuple) now a tuple of length = dimension (=3)
         dgs = self.downsampled_grid_size    # (tuple) now a tuple of length = dimension (=3)
-        dsf = self.downsampling_factor      # (int) assumed identical along all dimensions
+        dsf = self.downsampling_grid        # (int) assumed identical along all dimensions
 
         v_star = self.decoder__s(s) - self.v_star_average.type(str(s.type()))
         n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
@@ -555,13 +631,13 @@ class MetamorphicAtlas(nn.Module):
             self.decode_count += 1
 
         # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
-        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, elt) for elt in dgs])
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
                            ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim+1)*[1]))
 
         x = grid.clone() + v / float(2 ** ntp)
         for t in range(ntp):
-            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)                        # TODO: check it works in dim = 3
-        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)   # TODO: check it works in dim = 3
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
 
         return intensities
 
@@ -583,8 +659,9 @@ class MetamorphicAtlas(nn.Module):
         dim = self.dimension
         gs = self.grid_size
         dgs = self.downsampled_grid_size
-        dsf = self.downsampling_factor
+        dsf = self.downsampling_grid
         idx_slice = gs[0] // 2
+        np_affine = affine if affine is not None else np.eye(4)
 
         v_star = self.decoder__s(s) - self.v_star_average.type(str(s.type()))
         n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
@@ -618,7 +695,7 @@ class MetamorphicAtlas(nn.Module):
             self.decode_count += 1
 
         # FLOW
-        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, elt) for elt in dgs])
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
                            ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim + 1) * [1]))
 
         x = grid.clone() + v / float(2 ** ntp)
@@ -630,7 +707,7 @@ class MetamorphicAtlas(nn.Module):
 
         # WRITE
         template = mean + std * self.template_intensities.cpu()
-        nib.save(nib.Nifti1Image(gpu_numpy_detach(template), np.eye(4)), prefix + 'template.nii')
+        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii')
 
         sliced_images = []
         for i in range(bts):
@@ -641,19 +718,17 @@ class MetamorphicAtlas(nn.Module):
             target = mean + std * observations[i].cpu()
 
             # Get sliced image
-            images_i = [template[idx_slice], appearance[idx_slice], shape[idx_slice],
-                        metamorphosis[idx_slice], target[idx_slice]]
+            images_i = [template.squeeze(1)[:, idx_slice], appearance.squeeze(1)[:, idx_slice], shape.squeeze(1)[:, idx_slice],
+                        metamorphosis.squeeze(1)[:, idx_slice], target.squeeze(1)[:, idx_slice]]
             sliced_images += images_i
 
             # Convert to nifti all intermediate results
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(target), np.eye(4)), prefix + 'target.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape), np.eye(4)), prefix + 'shape.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance), np.eye(4)), prefix + 'appearance.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis), np.eye(4)), prefix + 'metamorphosis.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance.squeeze()), np_affine), prefix + '_appearance.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii')
 
         sliced_images = torch.cat(sliced_images)
         save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
-                   nrow=5, normalize=True, range=(0., float(torch.max(sliced_images).detach().cpu().numpy())))
-
-
+                   nrow=5, normalize=True, range=(0., float(gpu_numpy_detach(torch.max(sliced_images)))))
 

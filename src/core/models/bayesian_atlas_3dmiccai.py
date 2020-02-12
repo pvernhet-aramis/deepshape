@@ -45,7 +45,7 @@ parser.add_argument('--seed', type=int, default=123, help='Random seed.')
 # Dataset parameters
 parser.add_argument('--downsampling_data', type=int, default=2, choices=[0, 1, 2], help='2**downsampling of initial data.')
 # Model parameters
-parser.add_argument('--downsampling_power', type=int, default=2, choices=[0, 1, 2], help='2**downsampling of grid.')
+parser.add_argument('--downsampling_grid', type=int, default=2, choices=[0, 1, 2], help='2**downsampling of grid.')
 # Optimization parameters
 parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to perform.')
 parser.add_argument('--nb_train', type=int, default=8, help='Number of training data.')
@@ -95,7 +95,8 @@ if __name__ == '__main__':
     number_of_images_test = args.nb_test  # 10
     batch_size = min(args.batch_size, number_of_images_train)
 
-    downsampling_factor = 2**args.downsampling_power
+    downsampling_data = 2**args.downsampling_data
+    downsampling_grid = 2**args.downsampling_grid
     number_of_time_points = 5
 
     dimension = 3
@@ -121,6 +122,8 @@ if __name__ == '__main__':
     output_dir = os.path.join(HOME_PATH, 'Results/MICCAI/', dataset_name, experiment_prefix)
 
     # DATASET LOADERS ------------------------------
+    np_affine = np.load(file=os.path.join(data_tensor_path, 'train', 'affine.npy'))
+    args.np_affine = np_affine.tolist()      # only to keep track in experiments summary ... | may/should be omitted
     dataset_train = T13DDataset(os.path.join(data_tensor_path, 'train'), number_of_images_train,
                                 init_seed=args.seed, check_endswith='pt')
     dataset_train.set_transform(dataset_train.standardizer)
@@ -140,7 +143,7 @@ if __name__ == '__main__':
     # OPTIMIZATION ------------------------------
     number_of_epochs = args.epochs    # 5000
     print_every_n_iters = 2           # 100
-    save_every_n_iters = 2            # 500
+    save_every_n_iters = 100            # 500
 
     learning_rate = 1e-3
     learning_rate_ratio = 1
@@ -171,7 +174,7 @@ if __name__ == '__main__':
     # ==================================================================================================================
 
     model = MetamorphicAtlas(
-        intensities_template, number_of_time_points, downsampling_factor, args.downsampling_power,
+        intensities_template, number_of_time_points, downsampling_data, downsampling_grid,
         latent_dimension__s, latent_dimension__a,
         kernel_width__s, kernel_width__a,
         initial_lambda_square__s=lambda_square__s, initial_lambda_square__a=lambda_square__a)
@@ -398,9 +401,7 @@ if __name__ == '__main__':
                 intensities_to_write.append(intensities[:nb_selected])
                 n = n - nb_selected
             intensities_to_write = torch.cat(intensities_to_write).to(DEVICE)
-
             model.write(intensities_to_write, os.path.join(args.snapshots_path, 'train__epoch_%d' % epoch),
-                        intensities_mean, intensities_std, affine=None)
+                        intensities_mean, intensities_std, affine=np_affine)
             print('>> Saving done')
-
 
