@@ -46,6 +46,7 @@ parser.add_argument('--seed', type=int, default=123, help='Random seed.')
 parser.add_argument('--downsampling_data', type=int, default=2, choices=[0, 1, 2], help='2**downsampling of initial data.')
 # Model parameters
 parser.add_argument('--downsampling_grid', type=int, default=2, choices=[0, 1, 2], help='2**downsampling of grid.')
+parser.add_argument('--initialize_template', action='store_true', help='Whether to initialize template with random image.')
 # Optimization parameters
 parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to perform.')
 parser.add_argument('--nb_train', type=int, default=8, help='Number of training data.')
@@ -78,6 +79,68 @@ def cyclic_dataloader(loader, device):
 
 
 print('>> Conda env: ', os.environ['CONDA_DEFAULT_ENV'])
+
+
+def plot_losses(train_store, test_store, test_interval, path):
+    N = len(train_store['losses']['all'])
+    x = np.arange(1, N+1)
+    x_eval = x[[e == 1 or e % test_interval == 0 for e in x]]
+
+    # Fig 1 : full loss
+    fig, ax = plt.subplots()
+    ax.semilogy(x, train_store['losses']['all'], '-.', label='train', c='k')
+    ax.semilogy(x_eval, test_store['losses']['all'], '--o', c='k', label='test')
+    ax.tick_params(axis='y', labelcolor='k')
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('global loss', color='k')
+    ax.legend()
+    plt.title('Global loss during optimization')
+    plt.savefig(path + '_global' + '.pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # Fig 2 : kl __s and kl __ a
+    fig, ax = plt.subplots()
+    ax.semilogy(x, train_store['losses']['kl_s'], '-.', c='r', label='kl_s train')
+    ax.semilogy(x_eval, test_store['losses']['kl_s'], '--o', c='r', label='kl_s test')
+    axtwinx = ax.twinx()
+    axtwinx.semilogy(x, train_store['losses']['kl_a'], '-.', c='b', label='kl_a train')
+    axtwinx.semilogy(x_eval, test_store['losses']['kl_a'], '--o', c='b', label='kl_a test')
+    ax.tick_params(axis='y', labelcolor='r')
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('KL shape', color='r')
+    axtwinx.set_ylabel('KL appearance', color='b')
+    ax.legend()
+    axtwinx.legend()
+    plt.title('KL loss during optimization')
+    plt.savefig(path + '_kl' + '.pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # Fig 3 : data attachement
+    fig, ax = plt.subplots()
+    ax.semilogy(x, train_store['losses']['rec'], '-.', label='train', c='k')
+    ax.semilogy(x_eval, test_store['losses']['rec'], '--o', c='k', label='test')
+    ax.tick_params(axis='y', labelcolor='k')
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('Reconstruction', color='k')
+    ax.legend()
+    plt.title('Reconstruction loss during optimization')
+    plt.savefig(path + '_rec' + '.pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # Fig 4 : ratio evolution
+    fig, ax = plt.subplots()
+    ax.plot(x, train_store['ss']['var_s'], '-.', c='b', label='shape')
+    axtwinx = ax.twinx()
+    axtwinx.plot(x, train_store['ss']['var_a'], '-.', c='g', label='appearance')
+    ax.tick_params(axis='y', labelcolor='k')
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('Lambdas shape', color='b')
+    axtwinx.set_ylabel('Lambdas appearance', color='g')
+    ax.legend()
+    axtwinx.legend()
+    plt.title('Lambdas evolution during optimization')
+    plt.savefig(path + '_lambda' + '.pdf', bbox_inches='tight', pad_inches=0)
+    plt.close()
 
 
 if __name__ == '__main__':
@@ -136,17 +199,23 @@ if __name__ == '__main__':
 
     # INITIALIZE TEMPLATE TO ZERO ------------------------------
     # | intensities_template = dataset_train.__getitem__(np.random.choice(len(dataset_train), 1)).unsqueeze(0)
-    intensities_template = torch.zeros(dataset_train.mean.size()).unsqueeze(0)
-    intensities_mean = dataset_train.mean.detach().clone()                  # gpu_numpy_detach()
-    intensities_std = dataset_train.std.detach().clone()                    # gpu_numpy_detach()
+    if args.initialize_template:
+        intensities_template = dataset_train.__getitem__(int(np.random.choice(len(dataset_train), 1))).unsqueeze(0)
+    else:
+        intensities_template = torch.zeros(dataset_train.mean.size()).unsqueeze(0)    # nul because of standardization
+    intensities_mean = dataset_train.mean.detach().clone()                            # gpu_numpy_detach()
+    intensities_std = dataset_train.std.detach().clone()                              # gpu_numpy_detach()
 
     # OPTIMIZATION ------------------------------
-    number_of_epochs = args.epochs    # 5000
-    print_every_n_iters = 2           # 100
-    save_every_n_iters = 100            # 500
+    number_of_epochs = args.epochs      # 5000
+    print_every_n_iters = 10            # 100
+    save_every_n_iters = 50             # 500
 
     learning_rate = 1e-3
     learning_rate_ratio = 1
+    lr_decay = .5
+    lr_patience = 5
+    min_lr = 5e-5
 
     assert number_of_time_points > 1
     print('>> Dataset loaded successfully\n')
@@ -192,12 +261,36 @@ if __name__ == '__main__':
     # ], lr=learning_rate)
 
     # lr_decay = .9 | lr_patience = 20 | min_lr = 5e-4
-    # scheduler = ReduceLROnPlateau(optimizer, factor=lr_decay, patience=lr_patience, min_lr=min_lr, verbose=True,
-    #                              threshold_mode='abs')
+    scheduler = ReduceLROnPlateau(optimizer, factor=lr_decay, patience=lr_patience, min_lr=min_lr, verbose=True,
+                                 threshold_mode='abs')
 
     # ==================================================================================================================
     # RUN TRAINING
     # ==================================================================================================================
+
+    # statistics trackers
+    train_store = {
+        'losses': {
+            'rec': [],
+            'kl_s': [],
+            'kl_a': [],
+            'all': [],
+        },
+        'ss': {
+            'mean_s': [],
+            'mean_a': [],
+            'var_s': [],
+            'var_a': [],
+        }
+    }
+    test_store = {
+        'losses': {
+            'rec': [],
+            'kl_s': [],
+            'kl_a': [],
+            'all': [],
+        }
+    }
 
     for epoch in range(number_of_epochs + 1):
         # scheduler.step()
@@ -222,9 +315,14 @@ if __name__ == '__main__':
 
         for batch_idx, intensities in enumerate(train_loader):
             batch_target_intensities = intensities.to(DEVICE)
+            bts = batch_target_intensities.size(0)
+            space_size = reduce(mul, batch_target_intensities.size()[2:])
+            per_voxel_per_batch = float(bts * space_size)
 
             # ENCODE, SAMPLE AND DECODE
             means__s, log_variances__s, means__a, log_variances__a = model.encode(batch_target_intensities)
+            log_variances__s = torch.clamp(log_variances__s, -8, 2)
+            log_variances__a = torch.clamp(log_variances__a, -8, 2)
             stds__s, stds__a = torch.exp(0.5 * log_variances__s), torch.exp(0.5 * log_variances__a)
 
             ss_s_mean = gpu_numpy_detach(torch.mean(means__s))
@@ -236,7 +334,7 @@ if __name__ == '__main__':
             batch_latent__a = means__a + torch.zeros_like(means__a).normal_() * stds__a
             transformed_template = model(batch_latent__s, batch_latent__a)
 
-            # LOSS
+            # LOSS AVERAGED BY VOXEL
             attachment_loss = torch.sum((transformed_template - batch_target_intensities) ** 2) / noise_variance
             train_attachment_loss = gpu_numpy_detach(attachment_loss)
 
@@ -252,9 +350,9 @@ if __name__ == '__main__':
             # kullback_regularity_loss__a = torch.sum(means__a.pow(2)) / lambda_square__a
             train_kullback_regularity_loss__a = gpu_numpy_detach(kullback_regularity_loss__a)
 
-            total_loss = attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a
+            total_loss = (attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a) / per_voxel_per_batch
             # total_loss = attachment_loss
-            train_total_loss = gpu_numpy_detach(total_loss)
+            train_total_loss = gpu_numpy_detach(attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a)
 
             # GRADIENT STEP
             optimizer.zero_grad()
@@ -271,17 +369,17 @@ if __name__ == '__main__':
             ### UPDATE ###
             ##############
 
-            bts = batch_target_intensities.size(0)
-            epoch_train_attachment_loss[batch_idx] = train_attachment_loss / float(bts)
-            epoch_train_kullback_regularity_loss__s[batch_idx] = train_kullback_regularity_loss__s / float(bts)
-            epoch_train_kullback_regularity_loss__a[batch_idx] = train_kullback_regularity_loss__a / float(bts)
-            epoch_train_total_loss[batch_idx] = train_total_loss / float(bts)
-            epoch_train_ss_s_mean[batch_idx] = ss_s_mean / float(bts)
-            epoch_train_ss_s_var[batch_idx] = ss_s_var / float(bts)
-            epoch_train_ss_a_mean[batch_idx] = ss_a_mean / float(bts)
-            epoch_train_ss_a_var[batch_idx] = ss_a_var / float(bts)
+            epoch_train_attachment_loss[batch_idx] = train_attachment_loss / per_voxel_per_batch
+            epoch_train_kullback_regularity_loss__s[batch_idx] = train_kullback_regularity_loss__s / per_voxel_per_batch
+            epoch_train_kullback_regularity_loss__a[batch_idx] = train_kullback_regularity_loss__a / per_voxel_per_batch
+            epoch_train_total_loss[batch_idx] = train_total_loss / per_voxel_per_batch
+            epoch_train_ss_s_mean[batch_idx] = ss_s_mean
+            epoch_train_ss_s_var[batch_idx] = ss_s_var
+            epoch_train_ss_a_mean[batch_idx] = ss_a_mean
+            epoch_train_ss_a_var[batch_idx] = ss_a_var
 
-            if epoch > min(5000, int(number_of_epochs * 0.5)):
+            # Updates of hyperparameters
+            if epoch > min(100, int(number_of_epochs * 0.5)):
                 noise_variance *= float(train_attachment_loss / float(noise_dimension) / float(bts))
                 lambda_square__s = float(ss_s_var / float(bts))
                 lambda_square__a = float(ss_a_var / float(bts))
@@ -296,20 +394,34 @@ if __name__ == '__main__':
         epoch_train_ss_a_mean = np.mean(epoch_train_ss_a_mean)
         epoch_train_ss_a_var = np.mean(epoch_train_ss_a_var)
 
+        # Store results
+        train_store['losses']['rec'] += [epoch_train_attachment_loss]
+        train_store['losses']['kl_s'] += [epoch_train_kullback_regularity_loss__s]
+        train_store['losses']['kl_a'] += [epoch_train_kullback_regularity_loss__a]
+        train_store['losses']['all'] += [epoch_train_total_loss]
+        train_store['ss']['mean_s'] += [epoch_train_ss_s_mean]
+        train_store['ss']['mean_a'] += [epoch_train_ss_a_mean]
+        train_store['ss']['var_s'] += [epoch_train_ss_s_var]
+        train_store['ss']['var_a'] += [epoch_train_ss_a_var]
+
         # ==============================================================================================================
         # TEST STEP
         # ==============================================================================================================
 
-        n_step_per_epoch = len(test_loader)
-
-        epoch_test_attachment_loss = np.zeros(n_step_per_epoch)
-        epoch_test_kullback_regularity_loss__s = np.zeros(n_step_per_epoch)
-        epoch_test_kullback_regularity_loss__a = np.zeros(n_step_per_epoch)
-        epoch_test_total_loss = np.zeros(n_step_per_epoch)
-
         if number_of_images_test > 1 and epoch % print_every_n_iters == 0:
+
+            n_step_per_epoch = len(test_loader)
+
+            epoch_test_attachment_loss = np.zeros(n_step_per_epoch)
+            epoch_test_kullback_regularity_loss__s = np.zeros(n_step_per_epoch)
+            epoch_test_kullback_regularity_loss__a = np.zeros(n_step_per_epoch)
+            epoch_test_total_loss = np.zeros(n_step_per_epoch)
+
             for batch_idx, intensities in enumerate(test_loader):
                 batch_target_intensities = intensities.to(DEVICE)
+                bts = batch_target_intensities.size(0)
+                space_size = reduce(mul, batch_target_intensities.size()[2:])
+                per_voxel_per_batch = float(bts * space_size)
 
                 # ENCODE, SAMPLE AND DECODE
                 means__s, log_variances__s, means__a, log_variances__a = model.encode(batch_target_intensities)
@@ -338,28 +450,35 @@ if __name__ == '__main__':
                         lambda_square__a))
                 test_kullback_regularity_loss__a = gpu_numpy_detach(kullback_regularity_loss__a)
 
-                total_loss = attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a
-                test_total_loss = gpu_numpy_detach(total_loss)
+                total_loss = (attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a) / per_voxel_per_batch
+                test_total_loss = gpu_numpy_detach(attachment_loss + kullback_regularity_loss__s + kullback_regularity_loss__a)
 
-                bts = batch_target_intensities.size(0)
-                epoch_test_attachment_loss[batch_idx] = test_attachment_loss / float(bts)
-                epoch_test_kullback_regularity_loss__s[batch_idx] = test_kullback_regularity_loss__s / float(bts)
-                epoch_test_kullback_regularity_loss__a[batch_idx] = test_kullback_regularity_loss__a / float(bts)
-                epoch_test_total_loss[batch_idx] = test_total_loss / float(bts)
+                epoch_test_attachment_loss[batch_idx] = test_attachment_loss / per_voxel_per_batch
+                epoch_test_kullback_regularity_loss__s[batch_idx] = test_kullback_regularity_loss__s / per_voxel_per_batch
+                epoch_test_kullback_regularity_loss__a[batch_idx] = test_kullback_regularity_loss__a / per_voxel_per_batch
+                epoch_test_total_loss[batch_idx] = test_total_loss / per_voxel_per_batch
 
-        epoch_test_attachment_loss = np.mean(epoch_test_attachment_loss)
-        epoch_test_kullback_regularity_loss__s = np.mean(epoch_test_kullback_regularity_loss__s)
-        epoch_test_kullback_regularity_loss__a = np.mean(epoch_test_kullback_regularity_loss__a)
-        epoch_test_total_loss = np.mean(epoch_test_total_loss)
+            epoch_test_attachment_loss = np.mean(epoch_test_attachment_loss)
+            epoch_test_kullback_regularity_loss__s = np.mean(epoch_test_kullback_regularity_loss__s)
+            epoch_test_kullback_regularity_loss__a = np.mean(epoch_test_kullback_regularity_loss__a)
+            epoch_test_total_loss = np.mean(epoch_test_total_loss)
 
-        # ==============================================================================================================
-        # TEMPLATE SAFETY CHECK
-        # ==============================================================================================================
+            # Store results
+            test_store['losses']['rec'] += [epoch_test_attachment_loss]
+            test_store['losses']['kl_s'] += [epoch_test_kullback_regularity_loss__s]
+            test_store['losses']['kl_a'] += [epoch_test_kullback_regularity_loss__a]
+            test_store['losses']['all'] += [epoch_test_total_loss]
 
-        template_intensities = model.template_intensities.detach().clone()    # model.template_intensities.view((1,) + model.template_intensities.size())
-        template_latent_s, _, template_latent_a, _ = model.encode(template_intensities)
-        template_latent_s_norm = float(gpu_numpy_detach(torch.norm(template_latent_s[0], p=2)))
-        template_latent_a_norm = float(gpu_numpy_detach(torch.norm(template_latent_a[0], p=2)))
+            scheduler.step(epoch_test_total_loss)
+
+            # ==============================================================================================================
+            # TEMPLATE SAFETY CHECK
+            # ==============================================================================================================
+
+            template_intensities = model.template_intensities.detach().clone()    # model.template_intensities.view((1,) + model.template_intensities.size())
+            template_latent_s, _, template_latent_a, _ = model.encode(template_intensities)
+            template_latent_s_norm = float(gpu_numpy_detach(torch.norm(template_latent_s[0], p=2)))
+            template_latent_a_norm = float(gpu_numpy_detach(torch.norm(template_latent_a[0], p=2)))
 
         # ==============================================================================================================
         # WRITE IN LOG | SAVE MODEL
@@ -380,6 +499,10 @@ if __name__ == '__main__':
                  epoch_train_kullback_regularity_loss__a,
                  epoch_test_total_loss, epoch_test_attachment_loss, epoch_test_kullback_regularity_loss__s,
                  epoch_test_kullback_regularity_loss__a))
+
+            # Save losses plots
+            plot_losses(train_store, test_store, test_interval=print_every_n_iters,
+                        path=os.path.join(args.snapshots_path, 'plots'))
 
         if epoch % save_every_n_iters == 0 or epoch == number_of_epochs:
             print('>> Saving models and training samples ...')
