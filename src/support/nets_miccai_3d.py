@@ -497,8 +497,8 @@ class MetamorphicAtlas(nn.Module):
                  kernel_width__s, kernel_width__a,
                  initial_lambda_square__s=1., initial_lambda_square__a=1.):
         nn.Module.__init__(self)
-        # TODO: CHANGE NETWORK ACCORDING TO RESOLUTION ...
 
+        # ----------- SET PARAMETERS
         self.decode_count = 0
 
         self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height, depth)
@@ -522,9 +522,15 @@ class MetamorphicAtlas(nn.Module):
         self.kernel_width__s = kernel_width__s
         self.kernel_width__a = kernel_width__a
 
+        self.lambda_square__s = initial_lambda_square__s
+        self.lambda_square__a = initial_lambda_square__a
+        self.noise_dimension = reduce(mul, self.grid_size)
+
         self.template_intensities = nn.Parameter(template_intensities)
         print('>> Template intensities are {} = {} parameters'.format((template_intensities.size()[1:]),
                                                                       template_intensities.view(-1).size(0)))
+
+        # ----------- SET MODEL
         if self.downsampling_data == 1:
             # ---------- 5 convolutions available
             self.encoder = Encoder3d__5_down(self.grid_size, latent_dimension__s, latent_dimension__a,
@@ -647,7 +653,7 @@ class MetamorphicAtlas(nn.Module):
     def tamper_template_gradient(self, kw, lr, print_info=False):
         pass
 
-    def write(self, observations, prefix, mean, std, affine=None):
+    def write(self, observations, prefix, affine=None):
         s, _, a, _ = self.encode(observations)
 
         # INIT
@@ -706,16 +712,16 @@ class MetamorphicAtlas(nn.Module):
         intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
 
         # WRITE
-        template = mean + std * self.template_intensities.cpu()
+        template = self.template_intensities.mul(255).cpu()
         nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii')
 
         sliced_images = []
         for i in range(bts):
             # Get data
-            appearance = mean + std * (self.template_intensities.cpu() + n[i].cpu())
-            shape = mean + std * batched_scalar_interpolation_adaptive(self.template_intensities.cpu(), x[i].unsqueeze(0).detach().cpu())[0]
-            metamorphosis = mean + std * intensities[i].cpu()
-            target = mean + std * observations[i].cpu()
+            appearance = (self.template_intensities.cpu() + n[i].cpu()).mul(255)
+            shape = batched_scalar_interpolation_adaptive(self.template_intensities.cpu(), x[i].unsqueeze(0).detach().cpu())[0].mul(255)
+            metamorphosis = intensities[i].mul(255).cpu()
+            target = observations[i].mul(255).cpu()
 
             # Get sliced image
             images_i = [template.squeeze(1)[:, idx_slice], appearance.squeeze(1)[:, idx_slice], shape.squeeze(1)[:, idx_slice],

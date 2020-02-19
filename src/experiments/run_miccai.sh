@@ -12,5 +12,4 @@ DATADIR=${HOME}/'Data/MICCAI_dataset'
 python "${PYTHON_SCRIPT}" --output_dir "${OUTPUTDIR}" --data_dir "${DATADIR}" \
 --cuda --num_gpu 0 \
 --downsampling_data 1 --downsampling_grid 1 \
---initialize_template \
 --epochs 5000 --batch_size 8 --nb_train 200 --nb_test 10

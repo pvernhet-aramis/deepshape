@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 ### IMPORTS ###
 from src.in_out.data_iclr import *
-from torchvision import datasets
+from torchvision import datasets, transforms
 from scipy.ndimage import zoom
 import nibabel as nib
 import PIL.Image as pimg
@@ -289,10 +289,28 @@ def create_cross_sectional_brains_dataset__128(data_path, template_file, number_
 # -----------------------------------------------------------
 
 
-class T13DDataset(Dataset):
-    """(Sub) Dataset of BraTs 3D already gathered into folder."""
+class TrilinearInterpolation:
+    """Trilinear interpolation for reduction if reduction size is not one"""
 
-    def __init__(self, img_dir, nb_files, init_seed=123, check_endswith='pt', eps=1e-5):
+    def __init__(self, reduction):
+        self.red = reduction
+
+    def __call__(self, x):
+        reduced_tensor = torch.nn.functional.interpolate(x.unsqueeze(0).unsqueeze(0),
+                                                         scale_factor=1. / self.red,
+                                                         mode='trilinear', align_corners=False).squeeze(
+            0) if self.red > 1 \
+            else x.unsqueeze(0)
+        return reduced_tensor
+
+
+class StandardizedT13DDataset(Dataset):
+    """(Sub) Dataset of BraTs 3D already gathered into folder.
+    Specific to standardization of dataset using training data only.
+    Requires online computations (bit more tricky).
+    """
+
+    def __init__(self, img_dir, nb_files, reduction=0, init_seed=123, check_endswith='pt', eps=1e-5):
         """
         Args:
             img_dir (string): Input directory - must contain all torch Tensors.
@@ -303,7 +321,9 @@ class T13DDataset(Dataset):
         """
         assert len(check_endswith), "must check for valid files extension"
         self.img_dir = img_dir
-        self.transform = None
+        self.reduction = reduction
+        self.base_transform = TrilinearInterpolation(self.reduction)
+        self.normalization = None
         self.mean = None
         self.std = None
         self.eps = eps
@@ -332,20 +352,18 @@ class T13DDataset(Dataset):
         return self.nb_files
 
     def standardizer(self, image):
+        """ default normalization"""
         return (image - self.mean) / self.std
 
-    def set_transform(self, transform):
-        self.transform = transform
+    def set_normalization(self, normalization):
+        self.normalization = normalization
 
     def __getitem__(self, idx):
         filename = self.database[idx]
         image_path = os.path.join(self.img_dir, filename)
         image = torch.load(image_path).float()
-
-        if self.transform:
-            image = self.transform(image)
-
-        sample = image      # (channel, width, height, depth) with channel = 1
+        transform = transforms.Compose([self.base_transform, self.normalization])
+        sample = transform(image)  # (channel, width, height, depth) with channel = 1
         return sample
 
     def compute_statistics(self):
@@ -369,4 +387,78 @@ class T13DDataset(Dataset):
         # ----------- Safety check for zero division
         std[np.where(std <= self.eps)] = self.eps
         self.std = std
+
+
+class ZeroOneT13DDataset(Dataset):
+    """(Sub) Dataset of BraTs 3D already gathered into folder.
+    Rescaling of data to [0, 1] (uint8 + / 255)
+    """
+
+    def __init__(self, img_dir, nb_files, reduction=0, init_seed=123, check_endswith='pt', eps=1e-5):
+        """
+        Args:
+            img_dir (string): Input directory - must contain all torch Tensors.
+            nb_files (int): number of subset data to randomly select.
+            data_file (string): File name of the train/test split file.
+            init_seed (int): initialization seed for random data selection.
+            check_endswith (string, optional): check for files extension.
+        """
+        assert len(check_endswith), "must check for valid files extension"
+        self.img_dir = img_dir
+        self.reduction = reduction
+        self.base_transform = TrilinearInterpolation(self.reduction)
+        self.transform = transforms.Compose([
+            self.base_transform,
+            transforms.Lambda(lambda x: (x.div(255).float()))     # .type(torch.uint8)/255
+        ])
+        self.eps = eps
+        r = np.random.RandomState(init_seed)
+
+        # Check path exists, and set nb_files to min if necessary
+        if os.path.isdir(img_dir):
+            candidates_tensors = [_ for _ in os.listdir(img_dir) if _.endswith(check_endswith)]
+            nb_candidates = len(candidates_tensors)
+            if nb_candidates < nb_files:
+                print('>> Number of asked files {} exceeds number of available files {}'.format(nb_files, nb_candidates))
+                print('>> Setting number of data to maximum available : {}'.format(nb_candidates))
+                self.nb_files = nb_candidates
+            else:
+                print('>> Creating dataset with {} files (from {} available)'.format(nb_files, nb_candidates))
+                self.nb_files = nb_files
+
+            self.database = list(r.choice(candidates_tensors, size=self.nb_files, replace=False))
+        else:
+            raise Exception('The argument img_dir is not a valid directory.')
+
+    def __len__(self):
+        return self.nb_files
+
+    def __getitem__(self, idx):
+        filename = self.database[idx]
+        image_path = os.path.join(self.img_dir, filename)
+        image = torch.load(image_path).float()
+        sample = self.transform(image)      # (channel, width, height, depth) with channel = 1
+        return sample
+
+    def compute_statistics(self):
+        """
+        Computes statistics in an online fashion (using Welford’s method)
+        """
+        print('>> Computing online statistics for dataset ...')
+        for elt in tqdm(range(self.nb_files)):
+            sample = self.__getitem__(elt)
+            image = sample.detach().clone()
+            if elt == 0:
+                current_mean = image
+                current_var = torch.zeros_like(image)
+            else:
+                old_mean = current_mean.detach().clone()
+                current_mean = old_mean + 1. / (1. + elt) * (image - old_mean)
+                current_var = float(elt - 1) / float(elt) * current_var + 1. / (1. + elt) * (image - current_mean) * (image - old_mean)
+
+        mean = current_mean.detach().clone().float()
+        std = torch.sqrt(current_var).detach().clone().float()
+        # ----------- Safety check for zero division
+        std[np.where(std <= self.eps)] = self.eps
+        return mean, std
 
