@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 ### IMPORTS ###
-from src.in_out.data_iclr import *
+from src.in_out.data_miccai import *
 from torchvision import datasets, transforms
 from scipy.ndimage import zoom
 import nibabel as nib
@@ -296,11 +296,15 @@ class TrilinearInterpolation:
         self.red = reduction
 
     def __call__(self, x):
-        reduced_tensor = torch.nn.functional.interpolate(x.unsqueeze(0).unsqueeze(0),
+        """
+        :param x: image (channel, width, height, depth)
+        :return: interpolated image (dimension reduction)
+        """
+        reduced_tensor = torch.nn.functional.interpolate(x.unsqueeze(0),
                                                          scale_factor=1. / self.red,
                                                          mode='trilinear', align_corners=False).squeeze(
             0) if self.red > 1 \
-            else x.unsqueeze(0)
+            else x
         return reduced_tensor
 
 
@@ -394,7 +398,7 @@ class ZeroOneT13DDataset(Dataset):
     Rescaling of data to [0, 1] (uint8 + / 255)
     """
 
-    def __init__(self, img_dir, nb_files, reduction=0, init_seed=123, check_endswith='pt', eps=1e-5):
+    def __init__(self, img_dir, nb_files, reduction=0, init_seed=123, check_endswith='pt', eps=1e-5, is_half=False):
         """
         Args:
             img_dir (string): Input directory - must contain all torch Tensors.
@@ -409,9 +413,10 @@ class ZeroOneT13DDataset(Dataset):
         self.base_transform = TrilinearInterpolation(self.reduction)
         self.transform = transforms.Compose([
             self.base_transform,
-            transforms.Lambda(lambda x: (x.div(255).float()))     # .type(torch.uint8)/255
+            transforms.Lambda(lambda x: (x.div(255)))     # .type(torch.uint8)/255
         ])
         self.eps = eps
+        self.is_half = is_half
         r = np.random.RandomState(init_seed)
 
         # Check path exists, and set nb_files to min if necessary
@@ -436,8 +441,10 @@ class ZeroOneT13DDataset(Dataset):
     def __getitem__(self, idx):
         filename = self.database[idx]
         image_path = os.path.join(self.img_dir, filename)
-        image = torch.load(image_path).float()
+        image = torch.load(image_path)
         sample = self.transform(image)      # (channel, width, height, depth) with channel = 1
+        if self.is_half:
+            sample = sample.half()
         return sample
 
     def compute_statistics(self):
@@ -459,6 +466,6 @@ class ZeroOneT13DDataset(Dataset):
         mean = current_mean.detach().clone().float()
         std = torch.sqrt(current_var).detach().clone().float()
         # ----------- Safety check for zero division
-        std[np.where(std <= self.eps)] = self.eps
+        std[np.where(std.cpu() <= self.eps)] = self.eps
         return mean, std
 

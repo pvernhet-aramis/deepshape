@@ -2,12 +2,8 @@ import os
 import sys
 import argparse
 import datetime
-from copy import deepcopy
+import math
 import logging
-from collections import OrderedDict
-import itertools
-from functools import reduce
-from operator import mul
 
 ### Visualization ###
 import matplotlib
@@ -16,10 +12,11 @@ matplotlib.use('Agg')
 ### Core ###
 import numpy as np
 from torch.optim import Adam
+from adabound import AdaBound
 import torch.utils.data as data_utils
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import StepLR
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping
+
 
 # Setting paths to directory roots | >> deepshape
 parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -29,7 +26,7 @@ print('Setting root path to : {}'.format(parent))
 
 ### IMPORTS ###
 from src.in_out.datasets_miccai import ZeroOneT13DDataset
-from src.support.nets_miccai_3d import MetamorphicAtlas
+from src.support.networks.nets_vae_3d import MetamorphicAtlas3d
 from src.support.base_miccai import *
 
 
@@ -37,9 +34,6 @@ from src.support.base_miccai import *
 
 
 class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
-    """
-    See doc https://pytorch-lightning.readthedocs.io/en/latest/pytorch_lightning.core.lightning.html#pytorch_lightning.core.lightning.LightningModule.configure_optimizers
-    """
 
     def __init__(self, hparams, model, affine):
         super(VariationalMetamorphicAtlasExecuter, self).__init__()
@@ -48,14 +42,31 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
 
         # nn.Module parameters
         self.model = model
+        self.mse = torch.nn.MSELoss(reduction='sum')
+
+        # Miscellenious holders
         self.ss_s_var = None
         self.ss_a_var = None
+        self.attachment_loss = None
         self.affine = affine
+        self.last_device = None
 
-        self.epoch = 0
+        # Datasets
+        dataset_train = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
+                                           reduction=self.hparams.downsampling_data, init_seed=self.hparams.seed,
+                                           check_endswith='pt', is_half=self.hparams.use_16bits)
+        self.train_loader = data_utils.DataLoader(dataset_train, batch_size=self.hparams.batch_size, shuffle=True,
+                                                  num_workers=self.hparams.num_workers,
+                                                  pin_memory=self.hparams.pin_memory)
+        dataset_val = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'test'), self.hparams.nb_test,
+                                         reduction=self.hparams.downsampling_data, init_seed=self.hparams.seed,
+                                         check_endswith='pt', is_half=self.hparams.use_16bits)
+        self.val_loader = data_utils.DataLoader(dataset_val, batch_size=self.hparams.batch_size, shuffle=True,
+                                                num_workers=self.hparams.num_workers,
+                                                pin_memory=self.hparams.pin_memory)
 
     def check_hparams(self):
-        assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 1, "num workers must be int"
+        assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
 
     def forward(self, x):
         return self.model.decode(x)
@@ -64,10 +75,10 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         """
         Variational Autoencoder step : KL divergence loss
         """
+        self.last_device = batch.device.index
         batch_target_intensities = batch
         bts = batch_target_intensities.size(0)
         space_size = reduce(mul, batch_target_intensities.size()[2:])
-        per_voxel_per_batch = float(bts * space_size)
 
         # ---------- ENCODE, SAMPLE AND DECODE
         means__s, log_variances__s, means__a, log_variances__a = self.model.encode(batch_target_intensities)
@@ -85,7 +96,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = torch.sum((transformed_template - batch_target_intensities) ** 2) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -93,60 +104,44 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / per_voxel_per_batch
+        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / (bts * space_size)
 
-        outputs = {'train_attachment_loss': attachment_loss,
-            'train_kl_loss__s': kl_loss__s,
-            'train_kl_loss__a': kl_loss__a,
-            'train_total_loss': total_loss,
-            'train_ss_s_mean': ss_s_mean,
-            'train_ss_a_mean': ss_a_mean,
-            'train_ss_s_var': ss_s_var,
-            'train_ss_a_var': ss_a_var,
-        }
+        # ---------- LOGS
+        self.logger.experiment.add_scalars('attachment_loss', {'train': attachment_loss}, self.global_step)
+        self.logger.experiment.add_scalars('kl_loss__s', {'train': kl_loss__s}, self.global_step)
+        self.logger.experiment.add_scalars('kl_loss__a', {'train': kl_loss__a}, self.global_step)
+        self.logger.experiment.add_scalars('total_loss', {'train': total_loss}, self.global_step)
+        self.logger.experiment.add_scalars('ss_s_mean', {'train': ss_s_mean}, self.global_step)
+        self.logger.experiment.add_scalars('ss_a_mean', {'train': ss_a_mean}, self.global_step)
+        self.logger.experiment.add_scalars('ss_s_var', {'train': ss_s_var}, self.global_step)
+        self.logger.experiment.add_scalars('ss_a_var', {'train': ss_a_var}, self.global_step)
+        self.logger.experiment.add_scalar('lr', self.trainer.optimizers[0].param_groups[0]['lr'], self.global_step)
 
-        tensorboard_logs = {
-            'train/attachment_loss': attachment_loss,
-            'train/kl_loss__s': kl_loss__s,
-            'train/kl_loss__a': kl_loss__a,
-            'train/total_loss': total_loss,
-            'train/ss_s_mean': ss_s_mean,
-            'train/ss_a_mean': ss_a_mean,
-            'train/ss_s_var': ss_s_var,
-            'train/ss_a_var': ss_a_var,
-        }
+        # ---------- KEEP TRACKS FOR PARAMS CUSTOMIZED UPDATES
+        self.ss_a_var = float(ss_a_var)
+        self.ss_s_var = float(ss_s_var)
+        self.attachment_loss = float(gpu_numpy_detach(attachment_loss) / bts)
 
-        return {'outputs': outputs, 'log': tensorboard_logs}
+        return {'loss': total_loss}
 
-    def on_train_end(self):
+    def on_after_backward(self):
         """
-        Called on end of training step
+        Hyper-parameters update | batch_level
         """
-
-        if self.epoch % self.update_per_batch:
-            # Update parameters
-            self.model.noise_variance *= None
-            self.model.lambda_square__a = None
-            self.model.lambda_square__s = None
-
-    def on_epoch_end(self):
-        """
-        Called on end of training epoch
-        """
-
-        if self.epoch == 0 or self.epoch % self.hparams.write_every_epoch:
-            self.save_viz()
-        self.epoch += 1
+        # -------- UPDATE PARAMETERS IF NECESSARY
+        if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
+            self.model.noise_variance *= float(self.attachment_loss) / float(self.model.noise_dimension)
+            self.model.lambda_square__a = float(self.ss_a_var)
+            self.model.lambda_square__s = float(self.ss_s_var)
 
     def validation_step(self, batch, batch_idx):
         """
         Variational Autoencoder step : KL divergence
         """
-
+        self.last_device = batch.device.index
         batch_target_intensities = batch
         bts = batch_target_intensities.size(0)
         space_size = reduce(mul, batch_target_intensities.size()[2:])
-        per_voxel_per_batch = float(bts * space_size)
 
         # ---------- ENCODE, SAMPLE AND DECODE
         means__s, log_variances__s, means__a, log_variances__a = self.model.encode(batch_target_intensities)
@@ -159,7 +154,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = torch.sum((transformed_template - batch_target_intensities) ** 2) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -167,7 +162,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / per_voxel_per_batch
+        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / (bts * space_size)
 
         outputs = {
             'val_attachment_loss': attachment_loss,
@@ -198,63 +193,64 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         val_kl_loss__a_mean /= len(outputs)
         val_total_loss_mean /= len(outputs)
 
-        tensorboard_logs = {
-            'val/attachment_loss': val_attachment_loss_mean.item(),
-            'val/kl_loss__s': val_kl_loss__s_mean.item(),
-            'val/kl_loss__a': val_kl_loss__a_mean.item(),
-            'val/total_loss': val_total_loss_mean.item(),
-        }
-        results = {'log': tensorboard_logs}
-        return results
+        self.logger.experiment.add_scalars('attachment_loss', {'val': val_attachment_loss_mean}, self.global_step)
+        self.logger.experiment.add_scalars('kl_loss__s', {'val': val_kl_loss__s_mean}, self.global_step)
+        self.logger.experiment.add_scalars('kl_loss__a', {'val': val_kl_loss__a_mean}, self.global_step)
+        self.logger.experiment.add_scalars('total_loss', {'val': val_total_loss_mean}, self.global_step)
+
+        return {'val_loss': val_total_loss_mean, 'progress_bar': {'val_loss': val_total_loss_mean}}
 
     def configure_optimizers(self):
-        optimizers = [Adam(self.model.parameters(), self.hparams.lr)]
-        schedulers = [ReduceLROnPlateau(optimizers[0], factor=self.hparams.lr_decay, patience=self.hparams.lr_patience,
-                                        min_lr=self.hparams.min_lr, verbose=True, threshold_mode='abs')]
-        return optimizers, schedulers
+
+        if self.hparams.optimizer.lower() == 'adam':
+            print('>> Adam optimizer chosen !')
+            base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
+        elif self.hparams.optimizer.lower() == 'adabound':
+            print('>> AdaBound optimizer chosen !')
+            base_opt = AdaBound(self.model.parameters(),
+                                lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2),
+                                gamma=(1. - self.hparams.b2))
+        else:
+            assert False, 'No optimizer specified, please choose !'
+        optimizer = [base_opt]
+        scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
+        return optimizer, scheduler
 
     @pl.data_loader
     def train_dataloader(self):
-
-        dataset_train = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
-                                           reduction=self.hparams.reduction,  init_seed=self.hparams.seed,
-                                           check_endswith='pt')
-        train_loader = data_utils.DataLoader(dataset_train, batch_size=self.hparams.batch_size, shuffle=True,
-                                             num_workers=self.hparams.num_workers)
-        return train_loader
+        return self.train_loader
 
     @pl.data_loader
     def val_dataloader(self):
-        dataset_val = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'test'), self.hparams.nb_test,
-                                          reduction=self.hparams.reduction, init_seed=self.hparams.seed,
-                                          check_endswith='pt')
-        val_loader = data_utils.DataLoader(dataset_val, batch_size=self.hparams.batch_size, shuffle=True,
-                                            num_workers=self.hparams.num_workers)
-        return val_loader
+        return self.val_loader
 
     @pl.data_loader
     def test_dataloader(self):
-        dataset_test = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'test'), self.hparams.nb_test,
-                                          reduction=self.hparams.reduction, init_seed=self.hparams.seed,
-                                          check_endswith='pt')
-        test_loader = data_utils.DataLoader(dataset_test, batch_size=self.hparams.batch_size, shuffle=True,
-                                            num_workers=self.hparams.num_workers)
-        return test_loader
+        return self.val_loader
+
+    def on_epoch_end(self):
+        """
+        Called on end of training epoch | save viz and nifti according to current epoch value
+        """
+        if self.trainer.current_epoch == 0 or self.trainer.current_epoch % self.hparams.write_every_epoch == 0:
+            self.save_viz()
 
     def save_model(self):
         """
         Save model (akin to checkpoints)
         """
-        torch.save(self.model.state_dict(), os.path.join(self.hparams.snapshots_path, 'model__epoch_%d.pth' % self.epoch))
+        torch.save(self.model.state_dict(), os.path.join(self.hparams.snapshots_path,
+                                                         'model__epoch_%d.pth' % self.current_epoch))
 
     def save_viz(self):
         """
         Saving nifti images
         """
         # Randomly select images
+        test_loader = self.test_dataloader()     # by default, returned dataloaders are in list
         n = min(5, self.hparams.nb_test)
         intensities_to_write = []
-        for batch_idx, intensities in enumerate(self.test_dataloader):
+        for batch_idx, intensities in enumerate(test_loader[0]):
             if n <= 0:
                 break
             bts = intensities.size(0)
@@ -262,8 +258,12 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             intensities_to_write.append(intensities[:nb_selected])
             n = n - nb_selected
         intensities_to_write = torch.cat(intensities_to_write)
-        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path, 'train__epoch_%d' % self.epoch),
-                         affine=self.affine)
+        if self.on_gpu:
+            intensities_to_write = intensities_to_write.cuda(self.last_device)
+        if self.hparams.use_16bits:
+            intensities_to_write = intensities_to_write.half()
+        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path, 'train__epoch_%d' % self.current_epoch),
+                         affine=self.affine, is_half=self.hparams.use_16bits)
         print('>> Saving done')
 
 
@@ -290,46 +290,65 @@ if __name__ == '__main__':
     parser.add_argument('--latent_dimension__a', type=int, default=5, help='Latent dimension of a.')
     parser.add_argument('--kernel_width__s', type=int, default=5, help='Kernel width s.')
     parser.add_argument('--kernel_width__a', type=int, default=2.5, help='Kernel width a.')
-    parser.add_argument('--lambda_square__s', type=float, default=10 ** 2, help='Lambda square s.')
-    parser.add_argument('--lambda_square__a', type=float, default=10 ** 2, help='Lambda square a.')
+    parser.add_argument('--lambda_square__s', type=float, default=10. ** 2, help='Lambda square s.')
+    parser.add_argument('--lambda_square__a', type=float, default=10. ** 2, help='Lambda square a.')
     parser.add_argument('--noise_variance', type=float, default=0.1 ** 2, help='Noise variance.')
     parser.add_argument('--downsampling_grid', type=int, default=2**1, choices=[1, 2, 4],
                         help='2**downsampling of grid.')
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
-    parser.add_argument('--clipvar_min', type=float, default=-5, help='10**min clip variance.')
-    parser.add_argument('--clipvar_max', type=float, default=2, help='10**max clip variance.')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to perform.')
-    parser.add_argument('--nb_train', type=int, default=8, help='Number of training data.')
-    parser.add_argument('--nb_test', type=int, default=1, help='Number of testing data.')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size when processing data.')
-    parser.add_argument('--accumulated_batch', type=int, default=4, help='Number of accumulated batch for grad step.')
+    parser.add_argument('--clipvar_min', type=float, default=-10*math.log(10), help='10**min clip variance.')
+    parser.add_argument('--clipvar_max', type=float, default=6*math.log(10), help='10**max clip variance.')
+    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
+    parser.add_argument('--nb_train', type=int, default=32, help='Number of training data.')
+    parser.add_argument('--nb_test', type=int, default=8, help='Number of testing data.')
+    parser.add_argument('--batch_size', type=int, default=8, help='Batch size when processing data.')
+    parser.add_argument('--accumulate_grad_batch', type=int, default=2,
+                        help='Number of accumulated batch for grad step.')
     parser.add_argument('--use_16bits', action='store_true', help='Whether to use 16-bits mixed precision.')
+    parser.add_argument("--amp_level", type=str, default="O2", choices=["O0", "O1", "O2", "O3"],
+                        help="automatic mixed precision level")
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for dataloaders.')
+    parser.add_argument('--pin_memory', action='store_true', help='Whether to pin memory for dataloaders.')
     # Optimization parameters
-    parser.add_argument('--lr', type=float, default=1e-3, help='learning rate.')
+    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam', 'AdaBound'],
+                        help="Choose between Adam, or AdaBound")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam or AdaBound: learning rate")
+    parser.add_argument("--b1", type=float, default=0.9, help="Adam or AdaBound: first order momentum decay")
+    parser.add_argument("--b2", type=float, default=0.999, help="Adam or AdaBound: second order momentum decay")
+    parser.add_argument("--gamma", type=float, default=0.005, help="Adabound: convergence speed of bound functions")
     parser.add_argument('--lr_ratio', type=float, default=1, help='learning rate ratio.')
     parser.add_argument('--lr_decay', type=float, default=.5, help='learning rate decay.')
     parser.add_argument('--lr_patience', type=int, default=5, help='learning rate patience.')
-    parser.add_argument('--min_lr', type=float, default=float(5e-5), help='minimal learning rate.')
-    parser.add_argument('--early_patience', type=int, default=5, help='learning rate patience for early stopping.')
-    parser.add_argument('--early_min', type=int, default=200, help='minimum epochs before early stopping.')
+    parser.add_argument('--min_lr', type=float, default=float(5e-6), help='minimal learning rate.')
+    parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
+    parser.add_argument('--step_decay', type=float, default=.5, help='learning rate scheduler decay value.')
+    parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas.')
     # Storing data parameters
-    parser.add_argument('--val_check_interval', type=int, default=2, help='Number of epoch iterations between eval.')
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
+    parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
     parser.add_argument('--track_norms', type=int, default=-1, help='Track gradients norms (default: None).')
 
     args = parser.parse_args()
 
+    # GLOBAL
     HOME_PATH = '/network/lustre/dtlake01/aramis/users/paul.vernhet'
 
+    # dataset-related args
     args.experiment_prefix = '3D_rdm_slice_normalization_{}_reduction'.format(args.downsampling_data)
     # data_nifti_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/2_datasets/2_t1ce_normalized')
-    data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d/2_t1ce_normalized/0_reduction')
-    args.output_dir = os.path.join(HOME_PATH, '3dBraTs', args.experiment_prefix)
+    args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d/2_t1ce_normalized/0_reduction')
+    args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI/3dBraTs', args.experiment_prefix)
+
+    # batch-related args
     args.batch_size = min(args.batch_size, args.nb_train)
-    args.accumulated_gradient_steps = args.accumulated_batch // args.batch_size
-    np_affine = np.load(file=os.path.join(data_tensor_path, 'train', 'affine.npy'))
+
+    # other
+    np_affine = np.load(file=os.path.join(args.data_tensor_path, 'train', 'affine.npy'))
+
+    assert args.nb_train >= args.batch_size * args.accumulate_grad_batch, \
+        ('Incompatible options ( n_train = %d ) < ( batch_size * accumulate_grad_batches = %d * %d )' %
+         (args.nb_train, args.batch_size, args.accumulate_grad_batch))
 
     # ==================================================================================================================
     # GPU SETUP | SEEDS
@@ -360,15 +379,10 @@ if __name__ == '__main__':
 
     log = ''
     args.model_signature = str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')
-    args.snapshots_path = os.path.join(args.output_dir, '{}'.format(args.model_signature))
+    args.snapshots_path = os.path.join(args.output_dir, 'VAE_{}'.format(args.model_signature))
     if not os.path.exists(args.snapshots_path):
         os.makedirs(args.snapshots_path)
     print('\n>> Setting output directory to:\n', args.snapshots_path)
-
-    # with open(os.path.join(args.snapshots_path, 'args.json'), 'w') as f:
-    #     args_wo_device = deepcopy(args.__dict__)
-    #     args_wo_device.pop('device', None)
-    #     json.dump(args_wo_device, f, indent=4, sort_keys=True)
 
     # ==================================================================================================================
     # LOAD DATA
@@ -376,21 +390,24 @@ if __name__ == '__main__':
 
     # INITIALIZE TEMPLATE TO MEAN OF TRAINING DATA ------------------------------
     dataset_train = ZeroOneT13DDataset(os.path.join(args.data_tensor_path, 'train'), args.nb_train,
-                                       reduction=args.reduction, init_seed=args.seed,
+                                       reduction=args.downsampling_data, init_seed=args.seed,
                                        check_endswith='pt')
     intensities_template, _ = dataset_train.compute_statistics()
     intensities_template = intensities_template.unsqueeze(0)
+    assert not torch.isnan(intensities_template).any(), "NaN detected"
+    del dataset_train
     print('>> Templated initialized successfully\n')
 
     # ==================================================================================================================
     # BUILD MODEL
     # ==================================================================================================================
 
-    model = MetamorphicAtlas(
-        intensities_template, args.nb_train, args.downsampling_data, args.downsampling_grid,
+    model = MetamorphicAtlas3d(
+        intensities_template, args.number_of_time_points, args.downsampling_data, args.downsampling_grid,
         args.latent_dimension__s, args.latent_dimension__a,
         args.kernel_width__s, args.kernel_width__a,
-        initial_lambda_square__s=args.lambda_square__s, initial_lambda_square__a=args.lambda_square__a).to(DEVICE)
+        initial_lambda_square__s=args.lambda_square__s, initial_lambda_square__a=args.lambda_square__a,
+        noise_variance=args.noise_variance).to(DEVICE)
 
     # ==================================================================================================================
     # RUN TRAINING
@@ -398,29 +415,26 @@ if __name__ == '__main__':
 
     VAE_metamorphic = VariationalMetamorphicAtlasExecuter(args, model, np_affine)
 
-    custom_early_stop_callback = EarlyStopping(
-        monitor='val_total_loss',
-        min_delta=0.00,
-        patience=args.early_patience,
-        verbose=False,
-        mode='min'
-    ) if args.min_early < args.epochs else None
+    custom_early_stop_callback = None
 
-    trainer = pl.Trainer(gpus=[args.num_gpu],
+    trainer = pl.Trainer(gpus=([args.num_gpu] if args.cuda else None),
                          default_save_path=args.snapshots_path,
-                         min_epochs=args.min_early,
                          max_epochs=args.epochs,
                          early_stop_callback=custom_early_stop_callback,
                          use_amp=args.use_16bits,
-                         amp_level='O2',
+                         amp_level=args.amp_level,
                          track_grad_norm=args.track_norms,
-                         val_check_interval=int(args.nb_train/args.batch_size * args.val_check_interval),
-                         accumulate_grad_batches=args.accumulated_gradient_steps)
+                         accumulate_grad_batches=args.accumulate_grad_batch,
+                         check_val_every_n_epoch=args.write_every_epoch,
+                         row_log_interval=args.row_log_interval,
+                         log_save_interval=args.write_every_epoch,
+                         nb_sanity_val_steps=2,
+                         print_nan_grads=False)
     trainer.fit(VAE_metamorphic)
 
     logging.info(f'View tensorboard logs by running\ntensorboard --logdir {os.getcwd()}')
     logging.info('and going to http://localhost:6006 on your browser')
 
-    # to restaure model : https://pytorch-lightning.readthedocs.io/en/latest/pytorch_lightning.trainer.training_io.html
+    # to restore model : https://pytorch-lightning.readthedocs.io/en/latest/pytorch_lightning.trainer.training_io.html
 
 
