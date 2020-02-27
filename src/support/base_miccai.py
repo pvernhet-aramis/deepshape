@@ -342,6 +342,7 @@ def batched_scalar_interpolation(scalars, points):
         if not dsf == 1:
             points = nn.functional.interpolate(points, scale_factor=dsf, mode='bilinear', align_corners=True)
         gs = points.size(2)
+        print('scalars dim : ', scalars.size(2), 'points upscaled dim', gs)
 
         u = points[:, 0]
         v = points[:, 1]
@@ -426,11 +427,12 @@ def batched_scalar_interpolation(scalars, points):
 
 def batched_scalar_interpolation_adaptive(scalars, points):
     """
-    batched_scalar_interpolation with adaptive grid size per dimension
+    batched_scalar_interpolation with adaptive grid size per dimension  same upscaling everywhere
     """
     bts = points.size(0)
     dim = points.size(1)
     sca_dgs = scalars.size()[2:]    # scalars resolution
+
     assert len(set([sdg // pdg for pdg, sdg in zip(points.size()[2:], sca_dgs)])) == 1, \
         "downsampling ratio must be the same in every direction"
     assert scalars.size(2) >= points.size(2), "points must be downsampled wrt scalars"
@@ -439,8 +441,8 @@ def batched_scalar_interpolation_adaptive(scalars, points):
         # --------------- UPSAMPLE
         dsf = scalars.size(2) // points.size(2)
         if not dsf == 1:
-            points = nn.functional.interpolate(points, size=tuple(sca_dgs), mode='bilinear', align_corners=True)
-
+            points = nn.functional.interpolate(points, scale_factor=dsf, mode='bilinear', align_corners=True)
+        print('scalars dim : ', [e for e in sca_dgs], 'points upscaled dim', [e for e in points.size()[2:]])
         u = points[:, 0]
         v = points[:, 1]
 
@@ -463,17 +465,17 @@ def batched_scalar_interpolation_adaptive(scalars, points):
         v2 = v2.long()  # scalar y-coordinates after grid point
 
         scalars_on_points = (
-                batch_index_select(scalars.view(bts, -1), 1, u1 * sca_dgs[1] + v1).view(bts, 1, sca_dgs[0], sca_dgs[1]) * fu * fv +
-                batch_index_select(scalars.view(bts, -1), 1, u1 * sca_dgs[1] + v2).view(bts, 1, sca_dgs[0], sca_dgs[1]) * fu * gv +
-                batch_index_select(scalars.view(bts, -1), 1, u2 * sca_dgs[1] + v1).view(bts, 1, sca_dgs[0], sca_dgs[1]) * gu * fv +
-                batch_index_select(scalars.view(bts, -1), 1, u2 * sca_dgs[1] + v2).view(bts, 1, sca_dgs[0], sca_dgs[1]) * gu * gv)
+                batch_index_select(scalars.view(bts, -1), 1, u1 * sca_dgs[1] + v1).view(bts, 1, sca_dgs[0], sca_dgs[1]) * gu * gv +
+                batch_index_select(scalars.view(bts, -1), 1, u1 * sca_dgs[1] + v2).view(bts, 1, sca_dgs[0], sca_dgs[1]) * gu * fv +
+                batch_index_select(scalars.view(bts, -1), 1, u2 * sca_dgs[1] + v1).view(bts, 1, sca_dgs[0], sca_dgs[1]) * fu * gv +
+                batch_index_select(scalars.view(bts, -1), 1, u2 * sca_dgs[1] + v2).view(bts, 1, sca_dgs[0], sca_dgs[1]) * fu * fv)
         scalars_on_points = scalars_on_points.view(bts, 1, sca_dgs[0], sca_dgs[1])
 
     elif dim == 3:
         # --------------- UPSAMPLE
         dsf = scalars.size(2) // points.size(2)
         if not dsf == 1:
-            points = nn.functional.interpolate(points, size=tuple(sca_dgs), mode='trilinear', align_corners=True)
+            points = nn.functional.interpolate(points, scale_factor=dsf, mode='trilinear', align_corners=True)
 
         u = points[:, 0]
         v = points[:, 1]
@@ -504,14 +506,14 @@ def batched_scalar_interpolation_adaptive(scalars, points):
         v2 = v2.long()        # scalar y-coordinates after grid point
         w2 = w2.long()        # scalar z-coordinates after grid point
 
-        scalars_on_points = (batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * fw +
-                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * gw +
-                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * fw +
-                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * gw +
-                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * fw +
-                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * gw +
-                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * fw +
-                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * gw)
+        scalars_on_points = (batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * gv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u1 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * gu * fv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v1 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * gv * fw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w1).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * gw +
+                             batch_index_select(scalars.view(bts, -1), 1, u2 * (sca_dgs[2] * sca_dgs[1]) + v2 * sca_dgs[2] + w2).view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2]) * fu * fv * fw)
 
         scalars_on_points = scalars_on_points.view(bts, 1, sca_dgs[0], sca_dgs[1], sca_dgs[2])
 

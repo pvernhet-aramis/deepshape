@@ -1,7 +1,6 @@
 from src.support.base_miccai import *
 from src.in_out.data_miccai import *
 from torchvision.utils import save_image
-import nibabel as nib
 from functools import reduce
 from operator import mul
 
@@ -77,7 +76,7 @@ class Encoder2d__5_down_O1(nn.Module):
         self.linear_logv_1__s = Linear_Tanh(32 * n, 8 * n, bias=False)
         self.linear_logv_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
 
-        print('>> Encoder2d__5_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__5_down_O1 has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -206,7 +205,7 @@ class Encoder2d__4_down_O1(nn.Module):
         self.linear_logv_1__s = Linear_Tanh(16 * n, 8 * n, bias=False)
         self.linear_logv_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
 
-        print('>> Encoder2d__4_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__4_down_O1 has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -326,7 +325,7 @@ class Encoder2d__3_down_O1(nn.Module):
         self.linear_logv_1__s = Linear_Tanh(8 * n, 4 * n, bias=False)
         self.linear_logv_2__s = nn.Linear(4 * n, latent_dimension__s, bias=False)
 
-        print('>> Encoder2d__3_down has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+        print('>> Encoder2d__3_down_O1 has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
         bts = x.size(0)
@@ -628,8 +627,8 @@ class MetamorphicAtlas2d(nn.Module):
 
         v = v * normalizer__s
         n = n * normalizer__a
-        assert not torch.isnan(v).any(), "NaN detected"
-        assert not torch.isnan(n).any(), "NaN detected"
+        assert not torch.isnan(v).any(), "NaN detected v"
+        assert not torch.isnan(n).any(), "NaN detected n"
 
         if self.decode_count < 10:
             print('>> normalizer shape  = %.3E ; max(abs(v)) = %.3E' %
@@ -642,11 +641,16 @@ class MetamorphicAtlas2d(nn.Module):
         # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
         grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
                            ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim+1)*[1]))
-
+        assert not torch.isnan(grid).any(), "NaN detected grid"
+        assert not torch.isnan(v / float(2 ** ntp)).any(), "NaN detected v / float(2 ** ntp)"
         x = grid.clone() + v / float(2 ** ntp)
+        assert not torch.isnan(x).any(), "NaN detected x before time integration"
         for t in range(ntp):
-            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)   #
+            assert not torch.isnan(x).any(), "NaN detected x step {}".format(t)
         intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
+        # intensities = batched_scalar_interpolation(self.template_intensities + n, x)   # test
+        assert not torch.isnan(intensities).any(), "NaN detected intensities"
         return intensities
 
     def forward(self, s, a):
@@ -702,7 +706,7 @@ class MetamorphicAtlas2d(nn.Module):
             x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
 
         # INTERPOLATE
-        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x).float()
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x).float()   # _adaptive
 
         # WRITE
         template = self.template_intensities.float().mul(255).cpu()
@@ -865,7 +869,7 @@ class DiffeomorphicAtlas2d(nn.Module):
         x = grid.clone() + v / float(2 ** ntp)
         for t in range(ntp):
             x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
-        intensities = batched_scalar_interpolation_adaptive(self.template_intensities, x)
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities, x)    #
         return intensities
 
     def forward(self, s):
@@ -911,7 +915,7 @@ class DiffeomorphicAtlas2d(nn.Module):
             x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
 
         # INTERPOLATE
-        intensities = batched_scalar_interpolation_adaptive(self.template_intensities, x).float()
+        intensities = batched_scalar_interpolation(self.template_intensities, x).float()
 
         # WRITE
         template = self.template_intensities.float().mul(255).cpu()

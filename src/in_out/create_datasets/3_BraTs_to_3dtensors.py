@@ -10,7 +10,7 @@ parser.add_argument('--reduction', type=int, default=1, help='Reduction of image
 parser.add_argument('--num_threads', type=int, default=36, help='Number of threads to use.')
 args = parser.parse_args()
 
-print('>> Creates BraTs 3D dataset for reduction {}.'.format(args.reduction))
+print('>> Creates BraTs 3D dataset for reduction {} from preprocessed (normalized) BraTs.'.format(args.reduction))
 os.environ['OMP_NUM_THREADS'] = str(args.num_threads)
 torch.set_num_threads(args.num_threads)
 
