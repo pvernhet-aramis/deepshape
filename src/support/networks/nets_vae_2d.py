@@ -152,16 +152,17 @@ class DeepDecoder2d__5_up(nn.Module):
         self.inner_grid_size = [int(elt * 2 ** -5) for elt in out_grid_size]
         self.n = int(reduce(mul, self.inner_grid_size))
         self.latent_dimension = latent_dimension
-        self.linear1 = Linear_Tanh(latent_dimension, 16 * self.n, bias=False)
-        self.linear2 = Linear_Tanh(16 * self.n, 32 * self.n, bias=False)
+        self.linear1 = Linear_Tanh(latent_dimension, 32 * self.n, bias=False)
+        self.linear2 = Linear_Tanh(32 * self.n, 32 * self.n, bias=False)
         self.up1 = ConvTranspose2d_Tanh(32, 32, bias=False)
         self.up2 = ConvTranspose2d_Tanh(32, 16, bias=False)
         self.up3 = ConvTranspose2d_Tanh(16, 8, bias=False)
         self.up4 = ConvTranspose2d_Tanh(8, 4, bias=False)
+        self.up5 = nn.ConvTranspose2d(4, out_channels, kernel_size=2, stride=2, padding=0, bias=False)
         if last_nonlinearity.lower() == 'sigmoid':
-            self.up5 = ConvTranspose2d_Sigmoid(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Sigmoid()
         elif last_nonlinearity.lower() == 'tanh':
-            self.up5 = ConvTranspose2d_Tanh(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Tanh()
         else:
             raise AssertionError
         print('>> DeepDecoder2d__5_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
@@ -176,6 +177,7 @@ class DeepDecoder2d__5_up(nn.Module):
         x = self.up3(x)
         x = self.up4(x)
         x = self.up5(x)
+        x = self.nonlin_layer(x)
         return x
 
 
@@ -281,10 +283,11 @@ class DeepDecoder2d__4_up(nn.Module):
         self.up1 = ConvTranspose2d_Tanh(32, 16, bias=False)
         self.up2 = ConvTranspose2d_Tanh(16, 8, bias=False)
         self.up3 = ConvTranspose2d_Tanh(8, 4, bias=False)
+        self.up4 = nn.ConvTranspose2d(4, out_channels, kernel_size=2, stride=2, padding=0, bias=False)
         if last_nonlinearity.lower() == 'sigmoid':
-            self.up4 = ConvTranspose2d_Sigmoid(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Sigmoid()
         elif last_nonlinearity.lower() == 'tanh':
-            self.up4 = ConvTranspose2d_Tanh(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Tanh()
         else:
             raise AssertionError
         print('>> DeepDecoder2d__4_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
@@ -298,6 +301,7 @@ class DeepDecoder2d__4_up(nn.Module):
         x = self.up2(x)
         x = self.up3(x)
         x = self.up4(x)
+        x = self.nonlin_layer(x)
         return x
 
 # -------------------------------------------
@@ -399,10 +403,11 @@ class DeepDecoder2d__3_up(nn.Module):
         self.linear2 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
         self.up1 = ConvTranspose2d_Tanh(16, 8, bias=False)
         self.up2 = ConvTranspose2d_Tanh(8, 4, bias=False)
+        self.up3 = nn.ConvTranspose2d(4, out_channels, kernel_size=2, stride=2, padding=0, bias=False)
         if last_nonlinearity.lower() == 'sigmoid':
-            self.up3 = ConvTranspose2d_Sigmoid(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Sigmoid()
         elif last_nonlinearity.lower() == 'tanh':
-            self.up3 = ConvTranspose2d_Tanh(4, out_channels, bias=False)
+            self.nonlin_layer = nn.Tanh()
         else:
             raise AssertionError
         print('>> DeepDecoder2d__3_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
@@ -415,6 +420,7 @@ class DeepDecoder2d__3_up(nn.Module):
         x = self.up1(x)
         x = self.up2(x)
         x = self.up3(x)
+        self.nonlin_layer(x)
         return x
 
 
@@ -466,10 +472,11 @@ class DeepDecoder2d__1_up(nn.Module):
         self.linear1 = Linear_Tanh(latent_dimension, 4 * self.n, bias=False)
         self.linear2 = Linear_Tanh(4 * self.n, 8 * self.n, bias=False)
         self.linear3 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
+        self.up1 = nn.ConvTranspose2d(16, out_channels, kernel_size=2, stride=2, padding=0, bias=False)
         if last_nonlinearity.lower() == 'sigmoid':
-            self.up1 = ConvTranspose2d_Sigmoid(16, out_channels, bias=False)
+            self.nonlin_layer = nn.Sigmoid()
         elif last_nonlinearity.lower() == 'tanh':
-            self.up1 = ConvTranspose2d_Tanh(16, out_channels, bias=False)
+            self.nonlin_layer = nn.Tanh()
         else:
             raise AssertionError
         print('>> DeepDecoder2d__1_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
@@ -481,6 +488,7 @@ class DeepDecoder2d__1_up(nn.Module):
         x = self.linear2(x)
         x = self.linear3(x).view(expanded_size)
         x = self.up1(x)
+        x = self.nonlin_layer(x)
         return x
 
 # -------------------------------------------
@@ -509,7 +517,7 @@ class MetamorphicAtlas2d(nn.Module):
         self.downsampling_data = downsampling_data               # measures to how much depth network can go
         assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
         self.downsampling_grid = downsampling_grid
-        assert self.downsampling_data in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
         self.grid_size = tuple(template_intensities.size()[2:])
         self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
 
@@ -613,6 +621,7 @@ class MetamorphicAtlas2d(nn.Module):
         # NORMALIZE
         s_norm_squared = torch.sum(s.view(bts, -1) ** 2, dim=1)
         a_norm_squared = torch.sum(a.view(bts, -1) ** 2, dim=1)
+
         v_norm_squared = torch.sum(v * v_star, dim=tuple(range(1, dim + 2)))
         n_norm_squared = torch.sum(n * n_star, dim=tuple(range(1, dim + 2)))
         normalizer__s = torch.where(s_norm_squared > 1e-10,
@@ -641,15 +650,15 @@ class MetamorphicAtlas2d(nn.Module):
         # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
         grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
                            ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim+1)*[1]))
-        assert not torch.isnan(grid).any(), "NaN detected grid"
+
         assert not torch.isnan(v / float(2 ** ntp)).any(), "NaN detected v / float(2 ** ntp)"
+
         x = grid.clone() + v / float(2 ** ntp)
         assert not torch.isnan(x).any(), "NaN detected x before time integration"
         for t in range(ntp):
-            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)   #
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
             assert not torch.isnan(x).any(), "NaN detected x step {}".format(t)
         intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
-        # intensities = batched_scalar_interpolation(self.template_intensities + n, x)   # test
         assert not torch.isnan(intensities).any(), "NaN detected intensities"
         return intensities
 
@@ -706,7 +715,7 @@ class MetamorphicAtlas2d(nn.Module):
             x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
 
         # INTERPOLATE
-        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x).float()   # _adaptive
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x).float()
 
         # WRITE
         template = self.template_intensities.float().mul(255).cpu()
@@ -755,7 +764,7 @@ class DiffeomorphicAtlas2d(nn.Module):
         self.downsampling_data = downsampling_data               # measures to how much depth network can go
         assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
         self.downsampling_grid = downsampling_grid
-        assert self.downsampling_data in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
         self.grid_size = tuple(template_intensities.size()[2:])
         self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
 

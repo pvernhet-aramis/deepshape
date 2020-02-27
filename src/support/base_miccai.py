@@ -342,7 +342,6 @@ def batched_scalar_interpolation(scalars, points):
         if not dsf == 1:
             points = nn.functional.interpolate(points, scale_factor=dsf, mode='bilinear', align_corners=True)
         gs = points.size(2)
-        print('scalars dim : ', scalars.size(2), 'points upscaled dim', gs)
 
         u = points[:, 0]
         v = points[:, 1]
@@ -442,7 +441,7 @@ def batched_scalar_interpolation_adaptive(scalars, points):
         dsf = scalars.size(2) // points.size(2)
         if not dsf == 1:
             points = nn.functional.interpolate(points, scale_factor=dsf, mode='bilinear', align_corners=True)
-        print('scalars dim : ', [e for e in sca_dgs], 'points upscaled dim', [e for e in points.size()[2:]])
+
         u = points[:, 0]
         v = points[:, 1]
 

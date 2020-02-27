@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import datetime
-import math
 import logging
 
 ### Visualization ###
@@ -12,7 +11,6 @@ matplotlib.use('Agg')
 ### Core ###
 import numpy as np
 from torch.optim import Adam
-from adabound import AdaBound
 import torch.utils.data as data_utils
 from torch.optim.lr_scheduler import StepLR
 import pytorch_lightning as pl
@@ -98,7 +96,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_latent__a = means__a + torch.zeros_like(means__a).normal_() * stds__a
         transformed_template = model(batch_latent__s, batch_latent__a)
 
-        # ---------- LOSS AVERAGED BY VOXEL
+        # ---------- LOSS AVERAGED BY PIXEL
         attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
@@ -107,7 +105,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / (bts * space_size)
+        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / bts
 
         # ---------- LOGS
         self.logger.experiment.add_scalars('attachment_loss', {'train': attachment_loss}, self.global_step)
@@ -161,7 +159,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_latent__a = means__a + torch.zeros_like(means__a).normal_() * stds__a
         transformed_template = model(batch_latent__s, batch_latent__a)
 
-        # ---------- LOSS AVERAGED BY VOXEL
+        # ---------- LOSS AVERAGED BY PIXEL
         attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
@@ -210,16 +208,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        if self.hparams.optimizer.lower() == 'adam':
-            print('>> Adam optimizer chosen !')
-            base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
-        elif self.hparams.optimizer.lower() == 'adabound':
-            print('>> AdaBound optimizer chosen !')
-            base_opt = AdaBound(self.model.parameters(),
-                                lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2),
-                                gamma=(1. - self.hparams.b2))
-        else:
-            assert False, 'No optimizer specified, please choose !'
+        base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         optimizer = [base_opt]
         scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
         return optimizer, scheduler
@@ -300,8 +289,8 @@ if __name__ == '__main__':
     # Model parameters
     parser.add_argument('--latent_dimension__s', type=int, default=10, help='Latent dimension of s.')
     parser.add_argument('--latent_dimension__a', type=int, default=5, help='Latent dimension of a.')
-    parser.add_argument('--kernel_width__s', type=int, default=5, help='Kernel width s.')
-    parser.add_argument('--kernel_width__a', type=int, default=2.5, help='Kernel width a.')
+    parser.add_argument('--kernel_width__s', type=float, default=5, help='Kernel width s.')
+    parser.add_argument('--kernel_width__a', type=float, default=2.5, help='Kernel width a.')
     parser.add_argument('--lambda_square__s', type=float, default=10. ** 2, help='Lambda square s.')
     parser.add_argument('--lambda_square__a', type=float, default=10. ** 2, help='Lambda square a.')
     parser.add_argument('--noise_variance', type=float, default=0.1 ** 2, help='Noise variance.')
@@ -310,7 +299,7 @@ if __name__ == '__main__':
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
     parser.add_argument('--clipvar_min', type=float, default=float(-10*np.log(10)), help='10**min clip variance.')
-    parser.add_argument('--clipvar_max', type=float, default=float(10*np.log(10)), help='10**max clip variance.')
+    parser.add_argument('--clipvar_max', type=float, default=float(6*np.log(10)), help='10**max clip variance.')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
     parser.add_argument('--nb_train', type=int, default=32, help='Number of training data.')
     parser.add_argument('--nb_test', type=int, default=8, help='Number of testing data.')
@@ -323,18 +312,13 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for dataloaders.')
     parser.add_argument('--pin_memory', action='store_true', help='Whether to pin memory for dataloaders.')
     # Optimization parameters
-    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam', 'AdaBound'],
-                        help="Choose between Adam, or AdaBound")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Adam or AdaBound: learning rate")
-    parser.add_argument("--b1", type=float, default=0.9, help="Adam or AdaBound: first order momentum decay")
-    parser.add_argument("--b2", type=float, default=0.999, help="Adam or AdaBound: second order momentum decay")
-    parser.add_argument("--gamma", type=float, default=0.005, help="Adabound: convergence speed of bound functions")
-    parser.add_argument('--lr_ratio', type=float, default=1, help='learning rate ratio.')
-    parser.add_argument('--lr_decay', type=float, default=.5, help='learning rate decay.')
-    parser.add_argument('--lr_patience', type=int, default=5, help='learning rate patience.')
-    parser.add_argument('--min_lr', type=float, default=float(5e-6), help='minimal learning rate.')
+    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam'],
+                        help="Adam optimizer")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
+    parser.add_argument("--b1", type=float, default=0.9, help="Adam first order momentum decay")
+    parser.add_argument("--b2", type=float, default=0.999, help="Adam second order momentum decay")
     parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
-    parser.add_argument('--step_decay', type=float, default=.5, help='learning rate scheduler decay value.')
+    parser.add_argument('--step_decay', type=float, default=.75, help='learning rate scheduler decay value.')
     parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas.')
     # Storing data parameters
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')

@@ -14,5 +14,5 @@ python "${PYTHON_SCRIPT}" --data_dir "${DATADIR}" \
 --latent_dimension__s 20 --latent_dimension__a 10 --kernel_width__s 10 --kernel_width__a 2 \
 --lambda_square__s 1. --lambda_square__a 1. --noise_variance 0.0025 \
 --epochs 2000 --batch_size 4 --nb_train 4096 --nb_test 256 --num_workers 0 \
---optimizer "AdaBound" --accumulate_grad_batch 2 --lr 0.00005 --update_every_batch 128 --step_lr 250 \
+--optimizer "AdaBound" --accumulate_grad_batch 2 --lr 0.00005 --update_every_batch 128 --step_lr 50 --update_from_epoch 100 \
 --write_every_epoch 25 --row_log_interval 2 \

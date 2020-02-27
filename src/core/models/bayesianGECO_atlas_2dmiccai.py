@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import datetime
-import math
 from copy import deepcopy
 import logging
 
@@ -13,7 +12,6 @@ matplotlib.use('Agg')
 ### Core ###
 import numpy as np
 from torch.optim import Adam
-from adabound import AdaBound
 import torch.utils.data as data_utils
 from torch.optim.lr_scheduler import StepLR
 import pytorch_lightning as pl
@@ -50,6 +48,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.lambda_lagrangian = deepcopy(hparams.lambda_lagrangian)
         self.kappa = deepcopy(hparams.kappa)
         self.alpha_smoothing = deepcopy(hparams.alpha_smoothing)
+        self.ss_s_var = None
+        self.ss_a_var = None
         self.moving_avg = None
         self.last_device = None
         self.mse = torch.nn.MSELoss(reduction='sum')
@@ -129,6 +129,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.logger.experiment.add_scalar('lr', self.trainer.optimizers[0].param_groups[0]['lr'], self.global_step)
 
         # ---------- KEEP TRACKS FOR PARAMS CUSTOMIZED UPDATES
+        self.ss_a_var = float(ss_a_var)
+        self.ss_s_var = float(ss_s_var)
         self.moving_avg = float(
             gpu_numpy_detach(self.moving_averager(constrain, self.moving_avg, not self.global_step)))
 
@@ -146,6 +148,11 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         # -------- UPDATE PARAMETERS IF NECESSARY
         if self.trainer.current_epoch and self.trainer.current_epoch % self.hparams.update_every_batch == 0:
             self.lambda_lagrangian *= float(np.clip(np.exp(self.moving_avg), 0.99, 1.01))
+
+        # -------- UPDATE PARAMETERS IF NECESSARY
+        if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
+            self.model.lambda_square__a = float(self.ss_a_var)
+            self.model.lambda_square__s = float(self.ss_s_var)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -216,16 +223,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        if self.hparams.optimizer.lower() == 'adam':
-            print('>> Adam optimizer chosen !')
-            base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
-        elif self.hparams.optimizer.lower() == 'adabound':
-            print('>> AdaBound optimizer chosen !')
-            base_opt = AdaBound(self.model.parameters(),
-                                lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2),
-                                gamma=(1. - self.hparams.b2))
-        else:
-            assert False, 'No optimizer specified, please choose !'
+        base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         optimizer = [base_opt]
         scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
         return optimizer, scheduler
@@ -315,8 +313,8 @@ if __name__ == '__main__':
                         help='2**downsampling of grid.')
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
-    parser.add_argument('--clipvar_min', type=float, default=float(-5*np.log(10)), help='10**min clip variance.')
-    parser.add_argument('--clipvar_max', type=float, default=float(3*np.log(10)), help='10**max clip variance.')
+    parser.add_argument('--clipvar_min', type=float, default=float(-10*np.log(10)), help='10**min clip variance.')
+    parser.add_argument('--clipvar_max', type=float, default=float(6*np.log(10)), help='10**max clip variance.')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
     parser.add_argument('--nb_train', type=int, default=32, help='Number of training data.')
     parser.add_argument('--nb_test', type=int, default=8, help='Number of testing data.')
@@ -329,19 +327,19 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for dataloaders.')
     parser.add_argument('--pin_memory', action='store_true', help='Whether to pin memory for dataloaders.')
     # Optimization parameters
-    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam', 'AdaBound'],
-                        help="Choose between Adam, or AdaBound")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Adam or AdaBound: learning rate")
-    parser.add_argument("--b1", type=float, default=0.9, help="Adam or AdaBound: first order momentum decay")
-    parser.add_argument("--b2", type=float, default=0.999, help="Adam or AdaBound: second order momentum decay")
-    parser.add_argument("--gamma", type=float, default=0.005, help="Adabound: convergence speed of bound functions")
+    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam'],
+                        help="Adam optimizer")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
+    parser.add_argument("--b1", type=float, default=0.9, help="Adam first order momentum decay")
+    parser.add_argument("--b2", type=float, default=0.999, help="Adam second order momentum decay")
     parser.add_argument('--lambda_lagrangian', type=float, default=1., help='Lagrange init. coefficient for GECO loss.')
     parser.add_argument('--kappa', type=float, default=float(np.sqrt(0.001)),
                         help='Kappa sensitivity hyperparameter for reconstruction loss.')
     parser.add_argument('--alpha_smoothing', type=float, default=0.99, help='GECO moving average loss.')
-    parser.add_argument('--update_every_batch', type=int, default=2, help='When to update lambda.')
+    parser.add_argument('--update_every_batch', type=int, default=2, help='When to update lambda_lagrangian.')
+    parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas KL.')
     parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
-    parser.add_argument('--step_decay', type=float, default=.5, help='learning rate scheduler decay value.')
+    parser.add_argument('--step_decay', type=float, default=.75, help='learning rate scheduler decay value.')
     # Storing data parameters
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
     parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
@@ -395,7 +393,7 @@ if __name__ == '__main__':
 
     log = ''
     args.model_signature = str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')
-    args.snapshots_path = os.path.join(args.output_dir, 'VAE_{}'.format(args.model_signature))
+    args.snapshots_path = os.path.join(args.output_dir, 'GECO_{}'.format(args.model_signature))
     if not os.path.exists(args.snapshots_path):
         os.makedirs(args.snapshots_path)
     print('\n>> Setting output directory to:\n', args.snapshots_path)

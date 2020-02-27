@@ -535,7 +535,7 @@ class MetamorphicAtlas3d(nn.Module):
         self.downsampling_data = downsampling_data               # measures to how much depth network can go
         assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
         self.downsampling_grid = downsampling_grid
-        assert self.downsampling_data in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
         self.grid_size = tuple(template_intensities.size()[2:])
         self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
 

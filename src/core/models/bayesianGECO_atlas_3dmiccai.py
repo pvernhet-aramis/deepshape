@@ -4,7 +4,6 @@ import argparse
 import datetime
 from copy import deepcopy
 import logging
-import math
 
 ### Visualization ###
 import matplotlib
@@ -13,7 +12,6 @@ matplotlib.use('Agg')
 ### Core ###
 import numpy as np
 from torch.optim import Adam
-from adabound import AdaBound
 import torch.utils.data as data_utils
 from torch.optim.lr_scheduler import StepLR
 import pytorch_lightning as pl
@@ -215,14 +213,7 @@ class GecoMetamorphicAtlasExecuter(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        if self.hparams.optimizer.lower() == 'adam':
-            base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
-        elif self.hparams.optimizer.lower() == 'adabound':
-            base_opt = AdaBound(self.model.parameters(),
-                                lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2),
-                                gamma=(1. - self.hparams.b2))
-        else:
-            assert False, 'No optimizer specified, please choose !'
+        base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         optimizer = [base_opt]
         scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
         return optimizer, scheduler
@@ -310,8 +301,8 @@ if __name__ == '__main__':
                         help='2**downsampling of grid.')
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
-    parser.add_argument('--clipvar_min', type=float, default=-10*math.log(10), help='10**min clip variance.')
-    parser.add_argument('--clipvar_max', type=float, default=6*math.log(10), help='10**max clip variance.')
+    parser.add_argument('--clipvar_min', type=float, default=float(-10*np.log(10)), help='10**min clip variance.')
+    parser.add_argument('--clipvar_max', type=float, default=float(6*np.log(10)), help='10**max clip variance.')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
     parser.add_argument('--nb_train', type=int, default=32, help='Number of training data.')
     parser.add_argument('--nb_test', type=int, default=8, help='Number of testing data.')
@@ -324,7 +315,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for dataloaders.')
     parser.add_argument('--pin_memory', action='store_true', help='Whether to pin memory for dataloaders.')
     # Optimization parameters
-    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam', 'AdaBound'], help="Choose between Adam, or AdaBound")
+    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam'], help="Adam optimizer")
     parser.add_argument('--lambda_lagrangian', type=float, default=1., help='Lagrange init. coefficient for GECO loss.')
     parser.add_argument('--kappa', type=float, default=float(np.sqrt(0.001)),
                         help='Kappa sensitivity hyperparameter for reconstruction loss.')
@@ -333,7 +324,6 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=1e-4, help="Adam or AdaBound: learning rate")
     parser.add_argument("--b1", type=float, default=0.9, help="Adam or AdaBound: first order momentum decay")
     parser.add_argument("--b2", type=float, default=0.999, help="Adam or AdaBound: second order momentum decay")
-    parser.add_argument("--gamma", type=float, default=0.005, help="Adabound: convergence speed of bound functions")
     parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
     parser.add_argument('--step_decay', type=float, default=.5, help='learning rate scheduler decay value.')
     # Storing data parameters

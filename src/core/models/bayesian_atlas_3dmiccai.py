@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import datetime
-import math
 import logging
 
 ### Visualization ###
@@ -12,7 +11,6 @@ matplotlib.use('Agg')
 ### Core ###
 import numpy as np
 from torch.optim import Adam
-from adabound import AdaBound
 import torch.utils.data as data_utils
 from torch.optim.lr_scheduler import StepLR
 import pytorch_lightning as pl
@@ -50,6 +48,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         self.attachment_loss = None
         self.affine = affine
         self.last_device = None
+        self.previous_atlas = self.model.template_intensities.clone().detach()
 
         # Datasets
         dataset_train = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
@@ -104,7 +103,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / (bts * space_size)
+        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / bts
 
         # ---------- LOGS
         self.logger.experiment.add_scalars('attachment_loss', {'train': attachment_loss}, self.global_step)
@@ -128,6 +127,11 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         """
         Hyper-parameters update | batch_level
         """
+        # -------- LOG ATLAS VARIATIONS
+        atlas_delta = gpu_numpy_detach(torch.sum(torch.abs(self.previous_atlas - self.model.template_intensities)))
+        self.logger.experiment.add_scalar('atlas_total_L1_variations', atlas_delta, self.global_step)
+        self.previous_atlas = self.model.template_intensities.clone().detach()
+
         # -------- UPDATE PARAMETERS IF NECESSARY
         if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
             self.model.noise_variance *= float(self.attachment_loss) / float(self.model.noise_dimension)
@@ -162,7 +166,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / (bts * space_size)
+        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / bts
 
         outputs = {
             'val_attachment_loss': attachment_loss,
@@ -202,16 +206,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        if self.hparams.optimizer.lower() == 'adam':
-            print('>> Adam optimizer chosen !')
-            base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
-        elif self.hparams.optimizer.lower() == 'adabound':
-            print('>> AdaBound optimizer chosen !')
-            base_opt = AdaBound(self.model.parameters(),
-                                lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2),
-                                gamma=(1. - self.hparams.b2))
-        else:
-            assert False, 'No optimizer specified, please choose !'
+        base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         optimizer = [base_opt]
         scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
         return optimizer, scheduler
@@ -282,6 +277,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_threads', type=int, default=36, help='Number of threads to use if cuda not available')
     parser.add_argument('--seed', type=int, default=123, help='Random seed.')
     # Dataset parameters
+    parser.add_argument('--dataset', type=str, default='mock', choices=['mock', 'brats'],
+                        help='Dataset choice between mock eyes and brats.')
     parser.add_argument('--dimension', type=int, default=3, choices=[3], help='Dataset dimension.')
     parser.add_argument('--downsampling_data', type=int, default=2**1, choices=[1, 2, 4],
                         help='2**downsampling of initial data.')
@@ -290,15 +287,15 @@ if __name__ == '__main__':
     parser.add_argument('--latent_dimension__a', type=int, default=5, help='Latent dimension of a.')
     parser.add_argument('--kernel_width__s', type=int, default=5, help='Kernel width s.')
     parser.add_argument('--kernel_width__a', type=int, default=2.5, help='Kernel width a.')
-    parser.add_argument('--lambda_square__s', type=float, default=10. ** 2, help='Lambda square s.')
-    parser.add_argument('--lambda_square__a', type=float, default=10. ** 2, help='Lambda square a.')
+    parser.add_argument('--lambda_square__s', type=float, default=1. ** 2, help='Lambda square s.')
+    parser.add_argument('--lambda_square__a', type=float, default=1. ** 2, help='Lambda square a.')
     parser.add_argument('--noise_variance', type=float, default=0.1 ** 2, help='Noise variance.')
     parser.add_argument('--downsampling_grid', type=int, default=2**1, choices=[1, 2, 4],
                         help='2**downsampling of grid.')
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
-    parser.add_argument('--clipvar_min', type=float, default=-10*math.log(10), help='10**min clip variance.')
-    parser.add_argument('--clipvar_max', type=float, default=6*math.log(10), help='10**max clip variance.')
+    parser.add_argument('--clipvar_min', type=float, default=float(-10*np.log(10)), help='10**min clip variance.')
+    parser.add_argument('--clipvar_max', type=float, default=float(6*np.log(10)), help='10**max clip variance.')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
     parser.add_argument('--nb_train', type=int, default=32, help='Number of training data.')
     parser.add_argument('--nb_test', type=int, default=8, help='Number of testing data.')
@@ -311,18 +308,13 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for dataloaders.')
     parser.add_argument('--pin_memory', action='store_true', help='Whether to pin memory for dataloaders.')
     # Optimization parameters
-    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam', 'AdaBound'],
-                        help="Choose between Adam, or AdaBound")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Adam or AdaBound: learning rate")
-    parser.add_argument("--b1", type=float, default=0.9, help="Adam or AdaBound: first order momentum decay")
-    parser.add_argument("--b2", type=float, default=0.999, help="Adam or AdaBound: second order momentum decay")
-    parser.add_argument("--gamma", type=float, default=0.005, help="Adabound: convergence speed of bound functions")
-    parser.add_argument('--lr_ratio', type=float, default=1, help='learning rate ratio.')
-    parser.add_argument('--lr_decay', type=float, default=.5, help='learning rate decay.')
-    parser.add_argument('--lr_patience', type=int, default=5, help='learning rate patience.')
-    parser.add_argument('--min_lr', type=float, default=float(5e-6), help='minimal learning rate.')
+    parser.add_argument("--optimizer", type=str, default='Adam', choices=['Adam'],
+                        help="Adam optimizer")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
+    parser.add_argument("--b1", type=float, default=0.9, help="Adam first order momentum decay")
+    parser.add_argument("--b2", type=float, default=0.999, help="Adam second order momentum decay")
     parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
-    parser.add_argument('--step_decay', type=float, default=.5, help='learning rate scheduler decay value.')
+    parser.add_argument('--step_decay', type=float, default=.75, help='learning rate scheduler decay value.')
     parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas.')
     # Storing data parameters
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
@@ -336,15 +328,17 @@ if __name__ == '__main__':
 
     # dataset-related args
     args.experiment_prefix = '3D_rdm_slice_normalization_{}_reduction'.format(args.downsampling_data)
-    # data_nifti_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/2_datasets/2_t1ce_normalized')
-    args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d/2_t1ce_normalized/0_reduction')
-    args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI/3dBraTs', args.experiment_prefix)
+    args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d',
+                                         '2_t1ce_normalized/0_reduction' if args.dataset == 'brats' else '1_eyes')
+    args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI',
+                                   '3dBraTs' if args.dataset == 'brats' else '3dEyes', args.experiment_prefix)
 
     # batch-related args
     args.batch_size = min(args.batch_size, args.nb_train)
 
     # other
-    np_affine = np.load(file=os.path.join(args.data_tensor_path, 'train', 'affine.npy'))
+    np_affine = np.load(file=os.path.join(args.data_tensor_path, 'train', 'affine.npy')) if args.dataset == 'brats' \
+        else None
 
     assert args.nb_train >= args.batch_size * args.accumulate_grad_batch, \
         ('Incompatible options ( n_train = %d ) < ( batch_size * accumulate_grad_batches = %d * %d )' %
@@ -394,6 +388,7 @@ if __name__ == '__main__':
                                        check_endswith='pt')
     intensities_template, _ = dataset_train.compute_statistics()
     intensities_template = intensities_template.unsqueeze(0)
+    assert len(intensities_template.size()) == args.dimension + 2, "atlas size must be (batch, channel, width, height)"
     assert not torch.isnan(intensities_template).any(), "NaN detected"
     del dataset_train
     print('>> Templated initialized successfully\n')
@@ -428,7 +423,7 @@ if __name__ == '__main__':
                          check_val_every_n_epoch=args.write_every_epoch,
                          row_log_interval=args.row_log_interval,
                          log_save_interval=args.write_every_epoch,
-                         nb_sanity_val_steps=2,
+                         nb_sanity_val_steps=1,
                          print_nan_grads=False)
     trainer.fit(VAE_metamorphic)
 
