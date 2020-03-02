@@ -48,7 +48,6 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         self.attachment_loss = None
         self.affine = affine
         self.last_device = None
-        self.previous_atlas = self.model.template_intensities.clone().detach()
 
         # Datasets
         dataset_train = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
@@ -66,6 +65,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
 
     def check_hparams(self):
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
+        assert self.hparams.which_print in ["train", "test", "both"], "which print value not correct"
 
     def forward(self, x):
         return self.model.decode(x)
@@ -95,7 +95,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -103,7 +103,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / bts
+        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / bts
 
         # ---------- LOGS
         self.logger.experiment.add_scalars('attachment_loss', {'train': attachment_loss}, self.global_step)
@@ -119,7 +119,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         # ---------- KEEP TRACKS FOR PARAMS CUSTOMIZED UPDATES
         self.ss_a_var = float(ss_a_var)
         self.ss_s_var = float(ss_s_var)
-        self.attachment_loss = float(gpu_numpy_detach(attachment_loss) / bts)
+        self.attachment_loss = float(gpu_numpy_detach(attachment_loss) / self.model.noise_variance / bts)
 
         return {'loss': total_loss}
 
@@ -127,10 +127,6 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         """
         Hyper-parameters update | batch_level
         """
-        # -------- LOG ATLAS VARIATIONS
-        atlas_delta = gpu_numpy_detach(torch.sum(torch.abs(self.previous_atlas - self.model.template_intensities)))
-        self.logger.experiment.add_scalar('atlas_total_L1_variations', atlas_delta, self.global_step)
-        self.previous_atlas = self.model.template_intensities.clone().detach()
 
         # -------- UPDATE PARAMETERS IF NECESSARY
         if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
@@ -158,7 +154,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -166,7 +162,7 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss + kl_loss__s + kl_loss__a) / bts
+        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / bts
 
         outputs = {
             'val_attachment_loss': attachment_loss,
@@ -228,7 +224,15 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         Called on end of training epoch | save viz and nifti according to current epoch value
         """
         if self.trainer.current_epoch == 0 or self.trainer.current_epoch % self.hparams.write_every_epoch == 0:
-            self.save_viz()
+            if self.hparams.which_print == 'train':
+                self.save_viz(dataloader_name='train')
+            elif self.hparams.which_print == 'test':
+                self.save_viz(dataloader_name='test')
+            elif self.hparams.which_print == 'both':
+                self.save_viz(dataloader_name='train')
+                self.save_viz(dataloader_name='test')
+            else:
+                raise AssertionError
 
     def save_model(self):
         """
@@ -237,15 +241,19 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
         torch.save(self.model.state_dict(), os.path.join(self.hparams.snapshots_path,
                                                          'model__epoch_%d.pth' % self.current_epoch))
 
-    def save_viz(self):
+    def save_viz(self, dataloader_name):
         """
         Saving nifti images
         """
-        # Randomly select images
-        test_loader = self.test_dataloader()     # by default, returned dataloaders are in list
-        n = min(5, self.hparams.nb_test)
+        assert dataloader_name in ['train', 'test']
+        if dataloader_name == 'train':
+            data_loader = self.train_dataloader()
+            n = min(5, self.hparams.nb_train)
+        else:
+            data_loader = self.test_dataloader()[0]
+            n = min(5, self.hparams.nb_test)
         intensities_to_write = []
-        for batch_idx, intensities in enumerate(test_loader[0]):
+        for batch_idx, intensities in enumerate(data_loader):
             if n <= 0:
                 break
             bts = intensities.size(0)
@@ -257,9 +265,10 @@ class VariationalMetamorphicAtlasExecuter(pl.LightningModule):
             intensities_to_write = intensities_to_write.cuda(self.last_device)
         if self.hparams.use_16bits:
             intensities_to_write = intensities_to_write.half()
-        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path, 'train__epoch_%d' % self.current_epoch),
+        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path,
+                                                            '{}__epoch_{}'.format(dataloader_name, self.current_epoch)),
                          affine=self.affine, is_half=self.hparams.use_16bits)
-        print('>> Saving done')
+        print('>> Save ', dataloader_name)
 
 
 if __name__ == '__main__':
@@ -285,8 +294,8 @@ if __name__ == '__main__':
     # Model parameters
     parser.add_argument('--latent_dimension__s', type=int, default=10, help='Latent dimension of s.')
     parser.add_argument('--latent_dimension__a', type=int, default=5, help='Latent dimension of a.')
-    parser.add_argument('--kernel_width__s', type=int, default=5, help='Kernel width s.')
-    parser.add_argument('--kernel_width__a', type=int, default=2.5, help='Kernel width a.')
+    parser.add_argument('--kernel_width__s', type=float, default=5, help='Kernel width s.')
+    parser.add_argument('--kernel_width__a', type=float, default=2.5, help='Kernel width a.')
     parser.add_argument('--lambda_square__s', type=float, default=1. ** 2, help='Lambda square s.')
     parser.add_argument('--lambda_square__a', type=float, default=1. ** 2, help='Lambda square a.')
     parser.add_argument('--noise_variance', type=float, default=0.1 ** 2, help='Noise variance.')
@@ -319,6 +328,8 @@ if __name__ == '__main__':
     # Storing data parameters
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
     parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
+    parser.add_argument('--which_print', type=str, default='both', choices=["train", "test", "both"],
+                        help='From which dataset to print images.')
     parser.add_argument('--track_norms', type=int, default=-1, help='Track gradients norms (default: None).')
 
     args = parser.parse_args()
@@ -388,7 +399,7 @@ if __name__ == '__main__':
                                        check_endswith='pt')
     intensities_template, _ = dataset_train.compute_statistics()
     intensities_template = intensities_template.unsqueeze(0)
-    assert len(intensities_template.size()) == args.dimension + 2, "atlas size must be (batch, channel, width, height)"
+    assert len(intensities_template.size()) == args.dimension + 2, "atlas size must be (batch, channel, width, height, depth)"
     assert not torch.isnan(intensities_template).any(), "NaN detected"
     del dataset_train
     print('>> Templated initialized successfully\n')

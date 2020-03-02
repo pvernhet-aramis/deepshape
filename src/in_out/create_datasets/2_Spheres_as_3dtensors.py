@@ -5,20 +5,19 @@ import argparse
 import itertools
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
-from multiprocessing import Pool
 
-parser = argparse.ArgumentParser(description='Mock tensor dataset.')
+parser = argparse.ArgumentParser(description='Spheres 3D tensor dataset.')
 parser.add_argument('--num_threads', type=int, default=36, help='Number of threads to use.')
 args = parser.parse_args()
 
-print('>> Creates centered Mock Eyes 3D dataset.')
+print('>> Creates centered Spheres 3D dataset.')
 os.environ['OMP_NUM_THREADS'] = str(args.num_threads)
 torch.set_num_threads(args.num_threads)
 
 # ---------------------------------------------------------------
 # PATHS
 HOME_PATH = '/network/lustre/dtlake01/aramis/users/paul.vernhet'
-data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d/1_eyes')
+data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d/2_spheres')
 path_to_tensor_train = os.path.join(data_tensor_path, 'train')
 path_to_tensor_test = os.path.join(data_tensor_path, 'test')
 
@@ -32,55 +31,70 @@ if not os.path.exists(path_to_tensor_test):
 
 img_size = 64
 center = (img_size + 1.) / 2.0
-sigma = 10.0**(1/3)
+minimal_radius = .1
+sigma = 10.0**(1/3) / 2.   # sharper data than mock eyes dataset
 tol = 1e-10
-brain_r = 60
-tumour_outer_r = 36
-tumour_inner_r = 18.
 coordinates_x, coordinates_y, coordinates_z = np.meshgrid(np.arange(1, img_size + 1),
                                                           np.arange(1, img_size + 1),
                                                           np.arange(1, img_size + 1))
 
 
-def generate_black_eyes(path, x_min, x_max, y_min, y_max, z_min, z_max, oc_min, oc_max, ic_min, ic_max, nb_pts):
+def generate_black_spheres(path, bor_min, bor_max, nb_pts_bor,
+                           bir_min, bir_max, nb_pts_bir,
+                           boc_min, boc_max, nb_pts_boc,
+                           bic_min, bic_max, nb_pts_bic,
+                           tc_min, tc_max,
+                           nb_radii, nb_angles):
 
-    dx_list = np.linspace(x_min, x_max, nb_pts, endpoint=True)
-    dy_list = np.linspace(y_min, y_max, nb_pts, endpoint=True)
-    dz_list = np.linspace(z_min, z_max, nb_pts, endpoint=True)
-    oc_list = np.linspace(oc_min, oc_max, nb_pts, endpoint=True)
-    ic_list = np.linspace(ic_min, ic_max, nb_pts, endpoint=True)
+    bor_list = np.linspace(bor_min, bor_max, nb_pts_bor, endpoint=True)
+    bir_list = np.linspace(bir_min, bir_max, nb_pts_bir, endpoint=True)
+    boc_list = np.linspace(boc_min, boc_max, nb_pts_boc, endpoint=True)
+    bic_list = np.linspace(bic_min, bic_max, nb_pts_bic, endpoint=True)
 
-    for i, (dx, dy, dz, oc, ic) in tqdm(enumerate(itertools.product(dx_list, dy_list, dz_list, oc_list, ic_list))):
-        path_out = os.path.join(path, 'black_eye_{}.pt'.format(str(i)))
-        tumour_outer_c = oc
-        tumour_inner_c = ic
-        img = np.zeros((img_size, img_size, img_size))
+    i = 0
+    for brain_outer_r, brain_inner_r, brain_outer_c, brain_inner_c in tqdm(itertools.product(bor_list, bir_list,
+                                                                                             boc_list, bic_list)):
+        for tumour_r, tumour_c in zip(np.random.uniform(min(minimal_radius, brain_inner_r), brain_outer_r, nb_radii),
+                                      np.random.uniform(tc_min, tc_max, nb_radii)):
+            for phi, costheta, u in zip(np.random.uniform(0, 2*np.pi, nb_angles),
+                                        np.random.uniform(-1, 1, nb_angles),
+                                        np.random.uniform(0, 1, nb_angles)):
+                r = tumour_r * u ** (1./3)
+                theta = np.arccos(costheta)
+                tumor_center_x = r * np.sin(theta) * np.cos(phi)
+                tumor_center_y = r * np.sin(theta) * np.sin(phi)
+                tumor_center_z = r * np.cos(theta)
 
-        # Now replacing information of data to newer shade of gray matter
-        img[((coordinates_x - center) ** 2) / (brain_r / dx * img_size / 100.) ** 2 +
-            ((coordinates_y - center) ** 2) / (brain_r / dy * img_size / 100.) ** 2 +
-            ((coordinates_z - center) ** 2) / (brain_r / dz * img_size / 100.) ** 2 <= 1.] = 0.5
-        img[((coordinates_x - center) ** 2) / (tumour_outer_r / dx * img_size / 100.) ** 2 +
-            ((coordinates_y - center) ** 2) / (tumour_outer_r / dy * img_size / 100.) ** 2 +
-            ((coordinates_z - center) ** 2) / (
-                        tumour_outer_r / dz * img_size / 100.) ** 2 <= 1.] = tumour_outer_c
-        img[((coordinates_x - center) ** 2) / (tumour_inner_r / dx * img_size / 100.) ** 2 +
-            ((coordinates_y - center) ** 2) / (tumour_inner_r / dy * img_size / 100.) ** 2 +
-            ((coordinates_z - center) ** 2) / (
-                        tumour_inner_r / dz * img_size / 100.) ** 2 <= 1.] = tumour_inner_c
+                path_out = os.path.join(path, 'sphere_{}.pt'.format(str(i)))
+                img = np.zeros((img_size, img_size, img_size))
+                img[((coordinates_x - center) ** 2) / (brain_outer_r * img_size) ** 2 +
+                    ((coordinates_y - center) ** 2) / (brain_outer_r * img_size) ** 2 +
+                    ((coordinates_z - center) ** 2) / (brain_outer_r * img_size) ** 2 <= 1.] = brain_outer_c
+                img[((coordinates_x - center) ** 2) / (brain_inner_r * img_size) ** 2 +
+                    ((coordinates_y - center) ** 2) / (brain_inner_r * img_size) ** 2 +
+                    ((coordinates_z - center) ** 2) / (brain_inner_r * img_size) ** 2 <= 1.] = brain_inner_c
 
-        # Smoothing, clipping and saving as torch tensor
-        img = gaussian_filter(img, sigma * img_size / 100.)  # smoothing of data
-        img = (np.clip(img, tol, 1.0 - tol) * 255).astype('uint8')
-        torch_img = torch.from_numpy(img).float().unsqueeze(0)    # add first channel dimension
-        torch.save(torch_img, path_out)
+                # tumor circle | fixed color intensity
+                img[((coordinates_x - tumor_center_x) ** 2) / (tumour_r * img_size) ** 2 +
+                    ((coordinates_y - tumor_center_y) ** 2) / (tumour_r * img_size) ** 2 +
+                    ((coordinates_z - tumor_center_z) ** 2) / (tumour_r * img_size) ** 2 <= 1.] = .8
+
+                # Smoothing, clipping and saving as torch tensor
+                img = gaussian_filter(img, sigma * img_size / 100.)  # smoothing of data
+                img = (np.clip(img, tol, 1.0 - tol) * 255).astype('uint8')
+                torch_img = torch.from_numpy(img).float().unsqueeze(0)    # add first channel dimension
+                torch.save(torch_img, path_out)
+
+                i += 1
 
 # ---------------------------------------------------------------
 # GENERATE DATASETS
 
 
-generate_black_eyes(path_to_tensor_train, 1.55, 2.45, 1.55, 2.45, 1.55, 2.45, 0.05, 0.95, 0.05, 0.95, nb_pts=8)
-generate_black_eyes(path_to_tensor_test, 1.5, 2.5, 1.5, 2.5, 1.5, 2.5, 0., 1., 0., 1., nb_pts=7)
+generate_black_spheres(path_to_tensor_train, .35, .45, 5, .15, .25, 5, .1, .25, 5, .30, .60, 5, .75, 0.9,
+                       nb_radii=5, nb_angles=10)
+generate_black_spheres(path_to_tensor_test, .3, .5, 3, .1, .3, 3, .05, .25, 3, .25, .65, 5, .7, 0.95,
+                       nb_radii=5, nb_angles=10)
 
 # train_dx_list = np.linspace(1.55, 2.45, 8, endpoint=True)
 # train_dy_list = np.linspace(1.55, 2.45, 8, endpoint=True)

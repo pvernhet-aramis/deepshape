@@ -73,6 +73,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
 
     def check_hparams(self):
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
+        assert self.hparams.which_print in ["train", "test", "both"], "which print value not correct"
 
     def moving_averager(self, current, previous, is_first=False):
         return current if is_first else self.alpha_smoothing * previous + (1-self.alpha_smoothing) * current
@@ -105,7 +106,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -113,7 +114,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        constrain = (self.mse(transformed_template, batch_target_intensities) / bts - space_size * self.kappa ** 2) / self.model.noise_variance
+        constrain = (attachment_loss / bts - space_size * self.kappa ** 2) / self.model.noise_variance
         total_loss = self.lambda_lagrangian * constrain + (kl_loss__s + kl_loss__a) / bts
 
         # ---------- LOGS
@@ -146,8 +147,9 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.previous_atlas = self.model.template_intensities.clone().detach()
 
         # -------- UPDATE PARAMETERS IF NECESSARY
-        if self.trainer.current_epoch and self.trainer.current_epoch % self.hparams.update_every_batch == 0:
+        if self.trainer.current_epoch and self.global_step % self.hparams.update_every_batch == 0:
             self.lambda_lagrangian *= float(np.clip(np.exp(self.moving_avg), 0.99, 1.01))
+            self.lambda_lagrangian = np.clip(self.lambda_lagrangian, 1e-6, 1e6)   # safety manual clipping
 
         # -------- UPDATE PARAMETERS IF NECESSARY
         if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
@@ -174,7 +176,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         transformed_template = model(batch_latent__s, batch_latent__a)
 
         # ---------- LOSS AVERAGED BY VOXEL
-        attachment_loss = self.mse(transformed_template, batch_target_intensities) / self.model.noise_variance
+        attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
                 self.model.lambda_square__s))
@@ -182,7 +184,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        constrain = (self.mse(transformed_template, batch_target_intensities) / bts - space_size * self.kappa ** 2) / self.model.noise_variance
+        constrain = (attachment_loss / bts - space_size * self.kappa ** 2) / self.model.noise_variance
         total_loss = self.lambda_lagrangian * constrain + (kl_loss__s + kl_loss__a) / bts
 
         outputs = {
@@ -245,7 +247,15 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         Called on end of training epoch | save viz and nifti according to current epoch value
         """
         if self.trainer.current_epoch == 0 or self.trainer.current_epoch % self.hparams.write_every_epoch == 0:
-            self.save_viz()
+            if self.hparams.which_print == 'train':
+                self.save_viz(dataloader_name='train')
+            elif self.hparams.which_print == 'test':
+                self.save_viz(dataloader_name='test')
+            elif self.hparams.which_print == 'both':
+                self.save_viz(dataloader_name='train')
+                self.save_viz(dataloader_name='test')
+            else:
+                raise AssertionError
 
     def save_model(self):
         """
@@ -254,15 +264,20 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         torch.save(self.model.state_dict(), os.path.join(self.hparams.snapshots_path,
                                                          'model__epoch_%d.pth' % self.current_epoch))
 
-    def save_viz(self):
+    def save_viz(self, dataloader_name):
         """
         Saving nifti images
         """
         # Randomly select images
-        test_loader = self.test_dataloader()     # by default, returned dataloaders are in list
-        n = min(5, self.hparams.nb_test)
+        assert dataloader_name in ['train', 'test']
+        if dataloader_name == 'train':
+            data_loader = self.train_dataloader()
+            n = min(5, self.hparams.nb_train)
+        else:
+            data_loader = self.test_dataloader()[0]
+            n = min(5, self.hparams.nb_test)
         intensities_to_write = []
-        for batch_idx, intensities in enumerate(test_loader[0]):
+        for batch_idx, intensities in enumerate(data_loader):
             if n <= 0:
                 break
             bts = intensities.size(0)
@@ -274,9 +289,10 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             intensities_to_write = intensities_to_write.cuda(self.last_device)
         if self.hparams.use_16bits:
             intensities_to_write = intensities_to_write.half()
-        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path, 'train__epoch_%d' % self.current_epoch),
+        self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path,
+                                                            '{}__epoch_{}'.format(dataloader_name, self.current_epoch)),
                          is_half=self.hparams.use_16bits)
-        print('>> Saving done')
+        print('>> Save ', dataloader_name)
 
 
 if __name__ == '__main__':
@@ -304,8 +320,8 @@ if __name__ == '__main__':
     # Model parameters
     parser.add_argument('--latent_dimension__s', type=int, default=10, help='Latent dimension of s.')
     parser.add_argument('--latent_dimension__a', type=int, default=5, help='Latent dimension of a.')
-    parser.add_argument('--kernel_width__s', type=int, default=5, help='Kernel width s.')
-    parser.add_argument('--kernel_width__a', type=int, default=2.5, help='Kernel width a.')
+    parser.add_argument('--kernel_width__s', type=float, default=5, help='Kernel width s.')
+    parser.add_argument('--kernel_width__a', type=float, default=2.5, help='Kernel width a.')
     parser.add_argument('--lambda_square__s', type=float, default=10. ** 2, help='Lambda square s.')
     parser.add_argument('--lambda_square__a', type=float, default=10. ** 2, help='Lambda square a.')
     parser.add_argument('--noise_variance', type=float, default=0.1 ** 2, help='Noise variance.')
@@ -343,6 +359,8 @@ if __name__ == '__main__':
     # Storing data parameters
     parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
     parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
+    parser.add_argument('--which_print', type=str, default='both', choices=["train", "test", "both"],
+                        help='From which dataset to print images.')
     parser.add_argument('--track_norms', type=int, default=-1, help='Track gradients norms (default: None).')
 
     args = parser.parse_args()
