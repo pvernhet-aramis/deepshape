@@ -83,7 +83,7 @@ class Encoder3d__5_down_O1(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0, dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -5 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -94,6 +94,7 @@ class Encoder3d__5_down_O1(nn.Module):
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
         self.down4 = Conv3d_Tanh(8, 16, bias=False)
         self.down5 = Conv3d_Tanh(16, 32, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(32 * n, 8 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
@@ -109,6 +110,7 @@ class Encoder3d__5_down_O1(nn.Module):
         x = self.down3(x)
         x = self.down4(x)
         x = self.down5(x)
+        x = self.do1(x)
 
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
@@ -122,7 +124,8 @@ class Encoder3d__5_down(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0,
+                 dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -5 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -135,6 +138,7 @@ class Encoder3d__5_down(nn.Module):
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
         self.down4 = Conv3d_Tanh(8, 16, bias=False)
         self.down5 = Conv3d_Tanh(16, 32, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(32 * n, 8 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
@@ -155,6 +159,7 @@ class Encoder3d__5_down(nn.Module):
         x = self.down3(x)
         x = self.down4(x)
         x = self.down5(x)
+        x = self.do1(x)
 
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
@@ -170,7 +175,7 @@ class DeepDecoder3d__5_up(nn.Module):
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
     """
 
-    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh'):
+    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh', dropout=.2):
         nn.Module.__init__(self)
         assert last_nonlinearity.lower() in ['sigmoid', 'tanh']
         self.inner_grid_size = [int(elt * 2 ** -5) for elt in out_grid_size]
@@ -182,6 +187,7 @@ class DeepDecoder3d__5_up(nn.Module):
         self.up2 = ConvTranspose3d_Tanh(32, 16, bias=False)
         self.up3 = ConvTranspose3d_Tanh(16, 8, bias=False)
         self.up4 = ConvTranspose3d_Tanh(8, 4, bias=False)
+        self.do1 = nn.Dropout(dropout)
         if last_nonlinearity.lower() == 'sigmoid':
             self.up5 = ConvTranspose3d_Sigmoid(4, out_channels, bias=False)
         elif last_nonlinearity.lower() == 'tanh':
@@ -194,6 +200,7 @@ class DeepDecoder3d__5_up(nn.Module):
         batch_size = x.size(0)
         expanded_size = tuple([batch_size, 32] + self.inner_grid_size)
         x = self.linear1(x)
+        x = self.do1(x)
         x = self.linear2(x).view(expanded_size)
         x = self.up1(x)
         x = self.up2(x)
@@ -213,7 +220,7 @@ class Encoder3d__4_down_O1(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0, dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -4 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -223,6 +230,7 @@ class Encoder3d__4_down_O1(nn.Module):
         self.down2 = Conv3d_Tanh(2, 4, bias=False)
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
         self.down4 = Conv3d_Tanh(8, 16, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(16 * n, 8 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
@@ -237,6 +245,8 @@ class Encoder3d__4_down_O1(nn.Module):
         x = self.down2(x)
         x = self.down3(x)
         x = self.down4(x)
+        x = self.do1(x)
+
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
 
@@ -249,7 +259,8 @@ class Encoder3d__4_down(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0,
+                 dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -4 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -261,6 +272,7 @@ class Encoder3d__4_down(nn.Module):
         self.down2 = Conv3d_Tanh(2, 4, bias=False)
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
         self.down4 = Conv3d_Tanh(8, 16, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(16 * n, 8 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(8 * n, latent_dimension__s, bias=False)
@@ -280,6 +292,8 @@ class Encoder3d__4_down(nn.Module):
         x = self.down2(x)
         x = self.down3(x)
         x = self.down4(x)
+        x = self.do1(x)
+
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
         mean__a = self.linear_mean_2__a(self.linear_mean_1__a(x.view(bts, -1)))
@@ -294,7 +308,7 @@ class DeepDecoder3d__4_up(nn.Module):
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
     """
 
-    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh'):
+    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh', dropout=.2):
         nn.Module.__init__(self)
         assert last_nonlinearity.lower() in ['sigmoid', 'tanh']
         self.inner_grid_size = [int(elt * 2 ** -4) for elt in out_grid_size]
@@ -305,6 +319,8 @@ class DeepDecoder3d__4_up(nn.Module):
         self.up1 = ConvTranspose3d_Tanh(32, 16, bias=False)
         self.up2 = ConvTranspose3d_Tanh(16, 8, bias=False)
         self.up3 = ConvTranspose3d_Tanh(8, 4, bias=False)
+        self.do1 = nn.Dropout(dropout)
+
         if last_nonlinearity.lower() == 'sigmoid':
             self.up4 = ConvTranspose3d_Sigmoid(4, out_channels, bias=False)
         elif last_nonlinearity.lower() == 'tanh':
@@ -317,6 +333,7 @@ class DeepDecoder3d__4_up(nn.Module):
         batch_size = x.size(0)
         expanded_size = tuple([batch_size, 32] + self.inner_grid_size)
         x = self.linear1(x)
+        x = self.do1(x)
         x = self.linear2(x).view(expanded_size)
         x = self.up1(x)
         x = self.up2(x)
@@ -334,7 +351,7 @@ class Encoder3d__3_down_O1(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, init_var__s=1.0, dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -3 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -343,6 +360,7 @@ class Encoder3d__3_down_O1(nn.Module):
         self.down1 = Conv3d_Tanh(1, 2, bias=False)
         self.down2 = Conv3d_Tanh(2, 4, bias=False)
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(8 * n, 4 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(4 * n, latent_dimension__s, bias=False)
@@ -356,6 +374,7 @@ class Encoder3d__3_down_O1(nn.Module):
         x = self.down1(x)
         x = self.down2(x)
         x = self.down3(x)
+        x = self.do1(x)
 
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
@@ -369,7 +388,8 @@ class Encoder3d__3_down(nn.Module):
     out: latent_dimension
     """
 
-    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0):
+    def __init__(self, in_grid_size, latent_dimension__s, latent_dimension__a, init_var__s=1.0, init_var__a=1.0,
+                 dropout=.2):
         nn.Module.__init__(self)
         n = int(reduce(mul, [elt * 2 ** -3 for elt in in_grid_size]))
         self.latent_dimension__s = latent_dimension__s
@@ -380,6 +400,7 @@ class Encoder3d__3_down(nn.Module):
         self.down1 = Conv3d_Tanh(1, 2, bias=False)
         self.down2 = Conv3d_Tanh(2, 4, bias=False)
         self.down3 = Conv3d_Tanh(4, 8, bias=False)
+        self.do1 = nn.Dropout(dropout)
 
         self.linear_mean_1__s = Linear_Tanh(8 * n, 4 * n, bias=False)
         self.linear_mean_2__s = nn.Linear(4 * n, latent_dimension__s, bias=False)
@@ -398,6 +419,7 @@ class Encoder3d__3_down(nn.Module):
         x = self.down1(x)
         x = self.down2(x)
         x = self.down3(x)
+        x = self.do1(x)
 
         mean__s = self.linear_mean_2__s(self.linear_mean_1__s(x.view(bts, -1)))
         logv__s = self.linear_logv_2__s(self.linear_logv_1__s(x.view(bts, -1))) + np.log(self.init_var__s)
@@ -413,7 +435,7 @@ class DeepDecoder3d__3_up(nn.Module):
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
     """
 
-    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh'):
+    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh', dropout=.2):
         nn.Module.__init__(self)
         assert last_nonlinearity.lower() in ['sigmoid', 'tanh']
         self.inner_grid_size = [int(elt * 2 ** -3) for elt in out_grid_size]
@@ -423,6 +445,8 @@ class DeepDecoder3d__3_up(nn.Module):
         self.linear2 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
         self.up1 = ConvTranspose3d_Tanh(16, 8, bias=False)
         self.up2 = ConvTranspose3d_Tanh(8, 4, bias=False)
+        self.do1 = nn.Dropout(dropout)
+
         if last_nonlinearity.lower() == 'sigmoid':
             self.up3 = ConvTranspose3d_Sigmoid(4, out_channels, bias=False)
         elif last_nonlinearity.lower() == 'tanh':
@@ -435,6 +459,7 @@ class DeepDecoder3d__3_up(nn.Module):
         batch_size = x.size(0)
         expanded_size = tuple([batch_size, 16] + self.inner_grid_size)
         x = self.linear1(x)
+        x = self.do1(x)
         x = self.linear2(x).view(expanded_size)
         x = self.up1(x)
         x = self.up2(x)
@@ -452,7 +477,7 @@ class DeepDecoder3d__2_up(nn.Module):
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
     """
 
-    def __init__(self, latent_dimension, out_channels, out_grid_size):
+    def __init__(self, latent_dimension, out_channels, out_grid_size, dropout=.2):
         nn.Module.__init__(self)
         self.inner_grid_size = [int(elt * 2 ** -2) for elt in out_grid_size]
         self.n = int(reduce(mul, self.inner_grid_size))
@@ -462,6 +487,7 @@ class DeepDecoder3d__2_up(nn.Module):
         self.linear3 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
         self.up1 = ConvTranspose3d_Tanh(16, 4, bias=False)
         self.up2 = ConvTranspose3d_Tanh(4, out_channels, bias=False)
+        self.do1 = nn.Dropout(dropout)
         print('>> DeepDecoder2d__2_up has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
 
     def forward(self, x):
@@ -469,6 +495,7 @@ class DeepDecoder3d__2_up(nn.Module):
         expanded_size = tuple([batch_size, 16] + self.inner_grid_size)
         x = self.linear1(x)
         x = self.linear2(x)
+        x = self.do1(x)
         x = self.linear3(x).view(expanded_size)
         x = self.up1(x)
         x = self.up2(x)
@@ -481,7 +508,7 @@ class DeepDecoder3d__1_up(nn.Module):
     out: out_grid_size_x * out_grid_size_y * out_grid_size_z * 3
     """
 
-    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh'):
+    def __init__(self, latent_dimension, out_channels, out_grid_size, last_nonlinearity='tanh', dropout=.2):
         nn.Module.__init__(self)
         assert last_nonlinearity.lower() in ['sigmoid', 'tanh']
         self.inner_grid_size = [int(elt * 2 ** -1) for elt in out_grid_size]
@@ -490,6 +517,8 @@ class DeepDecoder3d__1_up(nn.Module):
         self.linear1 = Linear_Tanh(latent_dimension, 4 * self.n, bias=False)
         self.linear2 = Linear_Tanh(4 * self.n, 8 * self.n, bias=False)
         self.linear3 = Linear_Tanh(8 * self.n, 16 * self.n, bias=False)
+        self.do1 = nn.Dropout(dropout)
+
         if last_nonlinearity.lower() == 'sigmoid':
             self.up1 = ConvTranspose3d_Sigmoid(16, out_channels, bias=False)
         elif last_nonlinearity.lower() == 'tanh':
@@ -504,6 +533,7 @@ class DeepDecoder3d__1_up(nn.Module):
         expanded_size = tuple([batch_size, 16] + self.inner_grid_size)
         x = self.linear1(x)
         x = self.linear2(x)
+        x = self.do1(x)
         x = self.linear3(x).view(expanded_size)
         x = self.up1(x)
         return x
@@ -521,12 +551,14 @@ class MetamorphicAtlas3d(nn.Module):
     def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
                  latent_dimension__s, latent_dimension__a,
                  kernel_width__s, kernel_width__a,
-                 initial_lambda_square__s=1., initial_lambda_square__a=1., noise_variance=0.1 ** 2):
+                 initial_lambda_square__s=1., initial_lambda_square__a=1., noise_variance=0.1 ** 2,
+                 dropout=.2):
         nn.Module.__init__(self)
 
         # ----------- SET PARAMETERS
         self.decode_count = 0
 
+        assert 0 <= dropout <= 1, "Dropout value not compatible"
         self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height, depth)
         assert self.dimension == 3, "specific to dimension 3"
         self.latent_dimension__s = latent_dimension__s
@@ -561,14 +593,18 @@ class MetamorphicAtlas3d(nn.Module):
             # ---------- 5 convolutions available
             self.encoder = Encoder3d__5_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
-                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
-            self.decoder__a = DeepDecoder3d__5_up(latent_dimension__a, 1, self.grid_size)
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__5_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 
@@ -576,14 +612,18 @@ class MetamorphicAtlas3d(nn.Module):
             # ---------- 4 convolutions available
             self.encoder = Encoder3d__4_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
-                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
-            self.decoder__a = DeepDecoder3d__4_up(latent_dimension__a, 1, self.grid_size)
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__4_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 
@@ -591,14 +631,18 @@ class MetamorphicAtlas3d(nn.Module):
             # ---------- 3 convolutions available
             self.encoder = Encoder3d__3_down(self.grid_size, latent_dimension__s, latent_dimension__a,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
-                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)))
-            self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size)
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 
@@ -770,12 +814,14 @@ class DiffeomorphicAtlas3d(nn.Module):
     """
 
     def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
-                 latent_dimension__s, kernel_width__s, initial_lambda_square__s=1.,  noise_variance=0.1 ** 2):
+                 latent_dimension__s, kernel_width__s, initial_lambda_square__s=1.,  noise_variance=0.1 ** 2,
+                 dropout=.2):
         nn.Module.__init__(self)
 
         # ----------- SET PARAMETERS
         self.decode_count = 0
 
+        assert 0 <= dropout <= 1, "Dropout value not compatible"
         self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height, depth)
         assert self.dimension == 3, "specific to dimension 3"
         self.latent_dimension__s = latent_dimension__s
@@ -805,40 +851,52 @@ class DiffeomorphicAtlas3d(nn.Module):
         if self.downsampling_data == 1:
             # ---------- 5 convolutions available
             self.encoder = Encoder3d__5_down_O1(self.grid_size, latent_dimension__s,
-                                                init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)))
+                                                init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                                dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 
         elif self.downsampling_data == 2:
             # ---------- 4 convolutions available
             self.encoder = Encoder3d__4_down_O1(self.grid_size, latent_dimension__s,
-                                               init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)))
+                                               init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                                dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 
         elif self.downsampling_data == 4:
             # ---------- 3 convolutions available
             self.encoder = Encoder3d__3_down_O1(self.grid_size, latent_dimension__s,
-                                                init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)))
-            self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size)
+                                                init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                                dropout=dropout)
+            self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
-                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 2:
-                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             elif self.downsampling_grid == 4:
-                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, self.dimension, self.downsampled_grid_size)
+                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
             else:
                 raise RuntimeError
 

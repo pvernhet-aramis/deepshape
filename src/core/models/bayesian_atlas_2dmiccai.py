@@ -3,6 +3,9 @@ import sys
 import argparse
 import datetime
 import logging
+from copy import deepcopy
+import csv
+import shutil
 
 ### Visualization ###
 import matplotlib
@@ -25,7 +28,7 @@ print('Setting root path to : {}'.format(parent))
 from src.in_out.datasets_miccai import ZeroOneT12DDataset
 from src.support.networks.nets_vae_2d import MetamorphicAtlas2d
 from src.support.base_miccai import *
-from src.core.lightning_utils.callbacks import CustomModelCheckpoint
+
 
 # ---------------------------------------------------------------------
 
@@ -67,7 +70,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
                                         self.hparams.kernel_width__s, self.hparams.kernel_width__a,
                                         initial_lambda_square__s=self.hparams.lambda_square__s,
                                         initial_lambda_square__a=self.hparams.lambda_square__a,
-                                        noise_variance=self.hparams.noise_variance)
+                                        noise_variance=self.hparams.noise_variance,
+                                        dropout=self.hparams.dropout)
 
         # ---------- ADDITIONAL HOLDERS
         self.mse = torch.nn.MSELoss(reduction='sum')
@@ -76,6 +80,9 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.attachment_loss = None
         self.last_device = None
         self.previous_atlas = intensities_template.clone().detach()    # on CPU
+        self.best_train_epoch = 0
+        self.best_train_loss = np.inf
+        self.aggregated_attachment_loss = []
 
     def check_hparams(self):
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
@@ -133,7 +140,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.ss_a_var = float(ss_a_var)
         self.ss_s_var = float(ss_s_var)
         self.attachment_loss = float(gpu_numpy_detach(attachment_loss) / self.model.noise_variance / bts)
-        self.logger.experiment.add_scalars('monitored_training_loss', {'train': attachment_loss / bts}, self.global_step)
+        self.aggregated_attachment_loss.append(float(gpu_numpy_detach(attachment_loss) / bts))
 
         return {'loss': total_loss}
 
@@ -187,7 +194,6 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             'val_kl_loss__s': kl_loss__s,
             'val_kl_loss__a': kl_loss__a,
             'val_total_loss': total_loss,
-            'monitored_validation_loss': attachment_loss / bts
         }
         return outputs
 
@@ -201,25 +207,21 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         val_kl_loss__s_mean = 0
         val_kl_loss__a_mean = 0
         val_total_loss_mean = 0
-        monitored_validation_loss_mean = 0
         for output in outputs:
             val_attachment_loss_mean += output['val_attachment_loss']
             val_kl_loss__s_mean += output['val_kl_loss__s']
             val_kl_loss__a_mean += output['val_kl_loss__a']
             val_total_loss_mean += output['val_total_loss']
-            monitored_validation_loss_mean += output['monitored_validation_loss']
 
         val_attachment_loss_mean /= len(outputs)
         val_kl_loss__s_mean /= len(outputs)
         val_kl_loss__a_mean /= len(outputs)
         val_total_loss_mean /= len(outputs)
-        monitored_validation_loss_mean /= len(outputs)
 
         self.logger.experiment.add_scalars('attachment_loss', {'val': val_attachment_loss_mean}, self.global_step)
         self.logger.experiment.add_scalars('kl_loss__s', {'val': val_kl_loss__s_mean}, self.global_step)
         self.logger.experiment.add_scalars('kl_loss__a', {'val': val_kl_loss__a_mean}, self.global_step)
         self.logger.experiment.add_scalars('total_loss', {'val': val_total_loss_mean}, self.global_step)
-        # self.logger.experiment.add_scalars('monitored_validation_loss', gpu_numpy_detach(monitored_validation_loss_mean), self.global_step)
 
         return {'val_loss': val_total_loss_mean, 'progress_bar': {'val_loss': val_total_loss_mean}}
 
@@ -245,6 +247,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         """
         Called on end of training epoch | save viz and nifti according to current epoch value
         """
+
+        # --------- VIZ
         if self.trainer.current_epoch == 0 or self.trainer.current_epoch % self.hparams.write_every_epoch == 0:
             if self.hparams.which_print == 'train':
                 self.save_viz(dataloader_name='train')
@@ -255,16 +259,44 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
                 self.save_viz(dataloader_name='test')
             else:
                 raise AssertionError
+            print('>> Saved images reconstructions.')
 
-    # def _save_model(self, checkpoint_file_path):
-    #     """
-    #     Checkpoints: (hparams | model eights)
-    #     https://github.com/PyTorchLightning/PyTorch-Lightning/blob/master/pytorch_lightning/callbacks/model_checkpoint.py#L11-L181
-    #     """
-    #     os.makedirs(os.path.dirname(checkpoint_file_path), exist_ok=True)
-    #     torch.save(self.model.state_dict(), os.path.join(self.hparams.snapshots_path,
-    #                                                      'model__epoch_%d.pth' % self.current_epoch))
-    #     # self.hparams | to be saved in csv format
+        # --------- SAVE ON TRAINING | ONLY FOR DEBUG
+
+        if self.current_epoch % self.hparams.checkpoint_period == 0:
+            aggregated_attachment_loss = np.mean(self.aggregated_attachment_loss)
+
+            if aggregated_attachment_loss < self.best_train_loss:
+                old_best_pth = os.path.join(self.hparams.snapshots_path, 'checkpoints',
+                                            'train_model__epoch_%d.pth' % self.best_train_epoch)
+                old_best_csv = os.path.join(self.hparams.snapshots_path, 'checkpoints',
+                                            'train_hparams_%d.csv' % self.best_train_epoch)
+                if self.current_epoch:
+                    for old_path in [old_best_pth, old_best_csv]:
+                        try:
+                            shutil.rmtree(old_path)
+                        except OSError:
+                            os.remove(old_path)
+                self.best_train_epoch = self.current_epoch
+                self.best_train_loss = aggregated_attachment_loss
+                self._save_model(checkpoint_file_path=os.path.join(self.hparams.snapshots_path, 'checkpoints'))
+
+            self.aggregated_attachment_loss = []
+
+    def _save_model(self, checkpoint_file_path):
+        """
+        Custom checkpoints
+        """
+        os.makedirs(checkpoint_file_path, exist_ok=True)
+        torch.save(self.model.state_dict(), os.path.join(checkpoint_file_path,
+                                                         'train_model__epoch_%d.pth' % self.current_epoch))
+        # self.hparams | to be saved in csv format
+        current_hparams = deepcopy(self.hparams.__dict__)
+        with open(os.path.join(checkpoint_file_path,
+                               'train_hparams_%d.csv' % self.current_epoch), 'w') as outfile:
+            dict_writer = csv.DictWriter(outfile, current_hparams.keys())
+            dict_writer.writeheader()
+            dict_writer.writerows([current_hparams])
 
     def save_viz(self, dataloader_name):
         """
@@ -294,7 +326,6 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path,
                                                             '{}__epoch_{}'.format(dataloader_name, self.current_epoch)),
                          is_half=self.hparams.use_16bits)
-        print('>> Save ', dataloader_name)
 
 
 if __name__ == '__main__':
@@ -312,8 +343,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_threads', type=int, default=36, help='Number of threads to use if cuda not available')
     parser.add_argument('--seed', type=int, default=123, help='Random seed.')
     # Dataset parameters
-    parser.add_argument('--dataset', type=str, default='mock', choices=['mock', 'brats'],
-                        help='Dataset choice between mock eyes and brats.')
+    parser.add_argument('--dataset', type=str, default='mock', choices=['mock', 'brats', 'spheres'],
+                        help='Dataset choice between mock, spheres and brats.')
     parser.add_argument('--sliced_dim', type=int, default=2, choices=[0, 1, 2],
                         help='Sliced dimension (without channel).')
     parser.add_argument('--dimension', type=int, default=2, choices=[2], help='Dataset dimension.')
@@ -331,6 +362,7 @@ if __name__ == '__main__':
                         help='2**downsampling of grid.')
     parser.add_argument('--number_of_time_points', type=int, default=5, help='Integration time points.')
     # Training parameters
+    parser.add_argument('--dropout', type=float, default=.1, help='Dropout factor.')
     parser.add_argument('--clipvar_min', type=float, default=float(-10*np.log(10)), help='10**min clip variance.')
     parser.add_argument('--clipvar_max', type=float, default=float(6*np.log(10)), help='10**max clip variance.')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to perform.')
@@ -354,18 +386,10 @@ if __name__ == '__main__':
     parser.add_argument('--step_decay', type=float, default=.75, help='learning rate scheduler decay value.')
     parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas.')
     # Checkpoints parameters
-    parser.add_argument("--monitor_train", type=str, default='monitored_training_loss',
-                        help="Monitored quantity for best training checkpoints.")
-    parser.add_argument("--monitor_val", type=str, default='monitored_val_loss',
-                        help="Monitored quantity for best validation checkpoints.")
-    parser.add_argument("--save_top_k_train", type=int, default=0, help="How many top k training models saved.")
-    parser.add_argument("--save_top_k_val", type=int, default=1, help="How many top k validation models saved.")
-    parser.add_argument("--save_weights_only", action='store_true', help="Whether to save only weights or whole model.")
-    parser.add_argument("--mode_train", type=str, default='min', choices=['min', 'max'], help="Op for training loss.")
-    parser.add_argument("--mode_val", type=str, default='min', choices=['min', 'max'], help="Op for validation loss.")
-    parser.add_argument("--period", type=int, default=1, help="Period at which to perform checkpoints.")
+    parser.add_argument("--checkpoint_period", type=int, default=2,
+                        help="Period between checks for best training checkpoints.")
     # Storing data parameters
-    parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
+    parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for imgs.')
     parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
     parser.add_argument('--which_print', type=str, default='both', choices=["train", "test", "both"],
                         help='From which dataset to print images.')
@@ -378,10 +402,16 @@ if __name__ == '__main__':
 
     # dataset-related args
     args.experiment_prefix = '2D_rdm_slice{}_normalization_{}_reduction'.format(args.sliced_dim, args.downsampling_data)
-    args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d',
-                                         '2_t1ce_normalized/0_reduction' if args.dataset == 'brats' else '1_eyes')
-    args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI',
-                                   '2dBraTs' if args.dataset == 'brats' else '2dEyes', args.experiment_prefix)
+    if args.dataset == 'brats':
+        args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d',
+                                             '2_t1ce_normalized/0_reduction')
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dBraTs', args.experiment_prefix)
+    elif args.dataset == 'mock':
+        args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d', '1_eyes')
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dEyes', args.experiment_prefix)
+    else:
+        args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d', '0_spheres')
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dSpheres', args.experiment_prefix)
 
     # batch-related args
     args.batch_size = min(args.batch_size, args.nb_train)
@@ -429,22 +459,12 @@ if __name__ == '__main__':
 
     VAE_metamorphic = VariationalMetamorphicAtlas2dExecuter(args)
 
-    custom_checkpoint_callback = CustomModelCheckpoint(filepath=os.path.join(args.snapshots_path, 'checkpoints'),
-                                                       monitor_train=args.monitor_train,
-                                                       monitor_val=args.monitor_val,
-                                                       save_top_k_train=args.save_top_k_train,
-                                                       save_top_k_val=args.save_top_k_val,
-                                                       save_weights_only=args.save_weights_only,
-                                                       mode_train=args.mode_train,
-                                                       mode_val=args.mode_val,
-                                                       period=args.period)
     custom_early_stopping = None
 
     trainer = pl.Trainer(gpus=([args.num_gpu] if args.cuda else None),
                          default_save_path=args.snapshots_path,
                          max_epochs=args.epochs,
                          early_stop_callback=custom_early_stopping,
-                         checkpoint_callback=custom_checkpoint_callback,
                          use_amp=args.use_16bits,
                          amp_level=args.amp_level,
                          track_grad_norm=args.track_norms,
