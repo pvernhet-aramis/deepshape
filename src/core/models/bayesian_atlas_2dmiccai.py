@@ -3,8 +3,7 @@ import sys
 import argparse
 import datetime
 import logging
-from copy import deepcopy
-import csv
+import pandas as pd
 import shutil
 
 ### Visualization ###
@@ -85,6 +84,12 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         self.aggregated_attachment_loss = []
 
     def check_hparams(self):
+        available_types = [int, float, str, bool, torch.Tensor]
+        for key, val in vars(self.hparams).items():
+            if val is None:
+                assert val is not None, key + " is None"
+            else:
+                assert type(val) in available_types, key + " is not an available type : found {}".format(str(type(val)))
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
         assert self.hparams.which_print in ["train", "test", "both"], "which print value not correct"
 
@@ -95,8 +100,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         """
         Variational Autoencoder step : KL divergence loss
         """
-        self.last_device = batch.device.index
-        batch_target_intensities = batch
+        batch_target_intensities, _ = batch
+        self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
 
         # ---------- ENCODE, SAMPLE AND DECODE
@@ -163,8 +168,8 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         """
         Variational Autoencoder step : KL divergence
         """
-        self.last_device = batch.device.index
-        batch_target_intensities = batch
+        batch_target_intensities, _ = batch
+        self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
         space_size = reduce(mul, batch_target_intensities.size()[2:])
 
@@ -285,18 +290,16 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
 
     def _save_model(self, checkpoint_file_path):
         """
-        Custom checkpoints
+        Custom checkpoints :
+        https://github.com/williamFalcon/test-tube/blob/c6ae0caf42a4f4f3ffd2205fd85150d80ecb52c0/test_tube/log.py#L568
         """
         os.makedirs(checkpoint_file_path, exist_ok=True)
         torch.save(self.model.state_dict(), os.path.join(checkpoint_file_path,
                                                          'train_model__epoch_%d.pth' % self.current_epoch))
-        # self.hparams | to be saved in csv format
-        current_hparams = deepcopy(self.hparams.__dict__)
-        with open(os.path.join(checkpoint_file_path,
-                               'train_hparams_%d.csv' % self.current_epoch), 'w') as outfile:
-            dict_writer = csv.DictWriter(outfile, current_hparams.keys())
-            dict_writer.writeheader()
-            dict_writer.writerows([current_hparams])
+        pd.DataFrame({'key': list(vars(self.hparams).keys()),
+                      'value': list(vars(self.hparams).values())}).to_csv(r'{}'.format(
+            os.path.join(checkpoint_file_path,
+                         'train_hparams_%d.csv' % self.current_epoch)), index=False)
 
     def save_viz(self, dataloader_name):
         """
@@ -311,7 +314,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             data_loader = self.test_dataloader()[0]
             n = min(5, self.hparams.nb_test)
         intensities_to_write = []
-        for batch_idx, intensities in enumerate(data_loader):
+        for batch_idx, (intensities, _) in enumerate(data_loader):
             if n <= 0:
                 break
             bts = intensities.size(0)

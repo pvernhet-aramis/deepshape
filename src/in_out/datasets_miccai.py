@@ -393,7 +393,7 @@ class ZeroOneT12DDataset(Dataset):
         sample = self.transform(sample.unsqueeze(0)).squeeze(0)  # (channel, width, height) with channel = 1
         if self.is_half:
             sample = sample.half()
-        return sample
+        return sample, filename.split('.')[0]
 
     def compute_statistics(self):
         """
@@ -401,7 +401,7 @@ class ZeroOneT12DDataset(Dataset):
         """
         print('>> Computing online statistics for dataset ...')
         for elt in tqdm(range(self.nb_files)):
-            sample = self.__getitem__(elt)
+            sample, _ = self.__getitem__(elt)
             image = sample.detach().clone()
             if elt == 0:
                 current_mean = image
@@ -547,6 +547,16 @@ class ZeroOneT13DDataset(Dataset):
                 self.nb_files = nb_files
 
             self.database = list(r.choice(candidates_tensors, size=self.nb_files, replace=False))
+
+            is_affine_available = len([_ for _ in os.listdir(img_dir) if _ == 'affine.npy'])
+            if is_affine_available:
+                self.affine = torch.from_numpy(np.load(file=os.path.join(img_dir, 'affine.npy')))
+                with np.printoptions(precision=3, suppress=True):
+                    print('>> Affine matrix was detected :\n', self.affine.numpy())
+            else:
+                self.affine = torch.eye(4)
+                print('>> Affine matrix was NOT detected and set to identity :\n', self.affine.numpy())
+
         else:
             raise Exception('The argument img_dir is not a valid directory.')
 
@@ -560,7 +570,7 @@ class ZeroOneT13DDataset(Dataset):
         sample = self.transform(image.unsqueeze(0)).squeeze(0)      # (channel, width, height, depth) with channel = 1
         if self.is_half:
             sample = sample.half()
-        return sample
+        return sample, filename.split('.')[0]
 
     def compute_statistics(self):
         """
@@ -568,7 +578,7 @@ class ZeroOneT13DDataset(Dataset):
         """
         print('>> Computing online statistics for dataset ...')
         for elt in tqdm(range(self.nb_files)):
-            sample = self.__getitem__(elt)
+            sample, _ = self.__getitem__(elt)
             image = sample.detach().clone()
             if elt == 0:
                 current_mean = image

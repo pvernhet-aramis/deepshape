@@ -3,9 +3,8 @@ import sys
 import argparse
 import datetime
 import logging
-from copy import deepcopy
-import csv
 import shutil
+import pandas as pd
 
 ### Visualization ###
 import matplotlib
@@ -79,10 +78,16 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
         self.last_device = None
         self.best_train_epoch = 0
         self.best_train_loss = np.inf
-        self.affine = self.hparams.affine
         self.aggregated_attachment_loss = []
+        self.affine = dataset_train.affine
 
     def check_hparams(self):
+        available_types = [int, float, str, bool, torch.Tensor]
+        for key, val in vars(self.hparams).items():
+            if val is None:
+                assert val is not None, key + " is None"
+            else:
+                assert type(val) in available_types, key + " is not an available type : found {}".format(str(type(val)))
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
         assert self.hparams.which_print in ["train", "test", "both"], "which print value not correct"
 
@@ -93,8 +98,8 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
         """
         Variational Autoencoder step : KL divergence loss
         """
-        self.last_device = batch.device.index
-        batch_target_intensities = batch
+        batch_target_intensities, _ = batch
+        self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
 
         # ---------- ENCODE, SAMPLE AND DECODE
@@ -157,8 +162,8 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
         """
         Variational Autoencoder step : KL divergence
         """
-        self.last_device = batch.device.index
-        batch_target_intensities = batch
+        batch_target_intensities, _ = batch
+        self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
         space_size = reduce(mul, batch_target_intensities.size()[2:])
 
@@ -278,17 +283,16 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
 
     def _save_model(self, checkpoint_file_path):
         """
-        Custom checkpoints
+        Custom checkpoints :
+        https://github.com/williamFalcon/test-tube/blob/c6ae0caf42a4f4f3ffd2205fd85150d80ecb52c0/test_tube/log.py#L568
         """
         os.makedirs(checkpoint_file_path, exist_ok=True)
         torch.save(self.model.state_dict(), os.path.join(checkpoint_file_path,
                                                          'train_model__epoch_%d.pth' % self.current_epoch))
-        current_hparams = deepcopy(self.hparams.__dict__)
-        with open(os.path.join(checkpoint_file_path,
-                               'train_hparams_%d.csv' % self.current_epoch), 'w') as outfile:
-            dict_writer = csv.DictWriter(outfile, current_hparams.keys())
-            dict_writer.writeheader()
-            dict_writer.writerows([current_hparams])
+        pd.DataFrame({'key': list(vars(self.hparams).keys()),
+                      'value': list(vars(self.hparams).values())}).to_csv(r'{}'.format(
+            os.path.join(checkpoint_file_path,
+                         'train_hparams_%d.csv' % self.current_epoch)), index=False)
 
     def save_viz(self, dataloader_name):
         """
@@ -303,7 +307,7 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
             data_loader = self.test_dataloader()[0]
             n = min(5, self.hparams.nb_test)
         intensities_to_write = []
-        for batch_idx, intensities in enumerate(data_loader):
+        for batch_idx, (intensities, _) in enumerate(data_loader):
             if n <= 0:
                 break
             bts = intensities.size(0)
@@ -317,9 +321,8 @@ class VariationalMetamorphicAtlas3dExecuter(pl.LightningModule):
             intensities_to_write = intensities_to_write.half()
         self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path,
                                                             '{}__epoch_{}'.format(dataloader_name, self.current_epoch)),
-                         affine=self.affine,
+                         affine=self.affine.numpy(),
                          is_half=self.hparams.use_16bits)
-        print('>> Save ', dataloader_name)
 
 
 if __name__ == '__main__':
@@ -393,7 +396,7 @@ if __name__ == '__main__':
     HOME_PATH = '/network/lustre/dtlake01/aramis/users/paul.vernhet'
 
     # dataset-related args
-    args.experiment_prefix = '3D_rdm_slice{}_normalization_{}_reduction'.format(args.sliced_dim, args.downsampling_data)
+    args.experiment_prefix = '3D_rdm_slice_normalization_{}_reduction'.format(args.downsampling_data)
     if args.dataset == 'brats':
         args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d',
                                              '2_t1ce_normalized/0_reduction')
@@ -411,9 +414,6 @@ if __name__ == '__main__':
     assert args.nb_train >= args.batch_size * args.accumulate_grad_batch, \
         ('Incompatible options ( n_train = %d ) < ( batch_size * accumulate_grad_batches = %d * %d )' %
          (args.nb_train, args.batch_size, args.accumulate_grad_batch))
-
-    # other
-    args.affine = np.load(file=os.path.join(args.data_tensor_path, 'train', 'affine.npy')) if args.dataset == 'brats' else None
 
     # ==================================================================================================================
     # GPU SETUP | SEEDS

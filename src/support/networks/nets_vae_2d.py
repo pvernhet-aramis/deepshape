@@ -595,7 +595,7 @@ class MetamorphicAtlas2d(nn.Module):
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
                                              init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
                                              dropout=dropout)
-            self.decoder__a = DeepDecoder2d__4_up(latent_dimension__a, 1, self.grid_size, dropout=args.dropout)
+            self.decoder__a = DeepDecoder2d__4_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
                 self.decoder__s = DeepDecoder2d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
                                                       dropout=dropout)

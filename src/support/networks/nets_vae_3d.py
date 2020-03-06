@@ -777,7 +777,7 @@ class MetamorphicAtlas3d(nn.Module):
 
         # WRITE
         template = self.template_intensities.float().mul(255).cpu()
-        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii')
+        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii.gz')
 
         sliced_images = []
         for i in range(bts):
@@ -794,10 +794,10 @@ class MetamorphicAtlas3d(nn.Module):
             sliced_images += images_i
 
             # Convert to nifti all intermediate results
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance.squeeze()), np_affine), prefix + '_appearance.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance.squeeze()), np_affine), prefix + '_appearance.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii.gz')
 
         sliced_images = torch.cat(sliced_images)
         save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
@@ -1005,7 +1005,7 @@ class DiffeomorphicAtlas3d(nn.Module):
 
         # WRITE
         template = self.template_intensities.float().mul(255).cpu()
-        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii')
+        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii.gz')
 
         sliced_images = []
         for i in range(bts):
@@ -1021,9 +1021,9 @@ class DiffeomorphicAtlas3d(nn.Module):
             sliced_images += images_i
 
             # Convert to nifti all intermediate results
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii')
-            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii.gz')
 
         sliced_images = torch.cat(sliced_images)
         save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
