@@ -3,9 +3,8 @@ import sys
 import argparse
 import datetime
 import logging
-import pandas as pd
 import shutil
-from copy import deepcopy
+import pandas as pd
 
 ### Visualization ###
 import matplotlib
@@ -25,32 +24,30 @@ os.chdir(parent)
 print('Setting root path to : {}'.format(parent))
 
 ### IMPORTS ###
-from src.in_out.datasets_miccai import ZeroOneT12DDataset
-from src.support.networks.nets_vae_2d import MetamorphicAtlas2d
+from src.in_out.datasets_miccai import ZeroOneT13DDataset
+from src.support.networks.nets_vae_3d import MetamorphicAtlasDebbug3d
 from src.support.base_miccai import *
 
 
 # ---------------------------------------------------------------------
 
 
-class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
+class VariationalMetamorphicAtlasDebbug3dExecuter(pl.LightningModule):
 
     def __init__(self, hparams):
-        super(GECOMetamorphicAtlas2dExecuter, self).__init__()
+        super(VariationalMetamorphicAtlasDebbug3dExecuter, self).__init__()
         self.hparams = hparams
         self.check_hparams()
 
         # ---------- DATASETS
-        dataset_train = ZeroOneT12DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
-                                           sliced_dim=self.hparams.sliced_dim,
+        dataset_train = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'train'), self.hparams.nb_train,
                                            reduction=self.hparams.downsampling_data, init_seed=self.hparams.seed,
                                            check_endswith='pt', is_half=self.hparams.use_16bits)
         self.train_loader = data_utils.DataLoader(dataset_train, batch_size=self.hparams.batch_size, shuffle=True,
                                                   num_workers=self.hparams.num_workers,
                                                   pin_memory=self.hparams.pin_memory)
-        dataset_val = ZeroOneT12DDataset(os.path.join(self.hparams.data_tensor_path, 'test'), self.hparams.nb_test,
+        dataset_val = ZeroOneT13DDataset(os.path.join(self.hparams.data_tensor_path, 'test'), self.hparams.nb_test,
                                          reduction=self.hparams.downsampling_data, init_seed=self.hparams.seed,
-                                         sliced_dim=self.hparams.sliced_dim,
                                          check_endswith='pt', is_half=self.hparams.use_16bits)
         self.val_loader = data_utils.DataLoader(dataset_val, batch_size=self.hparams.batch_size, shuffle=True,
                                                 num_workers=self.hparams.num_workers,
@@ -58,35 +55,32 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
 
         # ----------  ATLAS TEMPLATE
         intensities_template, _ = dataset_train.compute_statistics()
-        intensities_template = intensities_template.unsqueeze(0)  # (batch, channel, width, height)
+        intensities_template = intensities_template.unsqueeze(0)       # (batch, channel, width, height)
         assert len(
-            intensities_template.size()) == self.hparams.dimension + 2, "atlas size must be (batch, channel, width, height)"
+            intensities_template.size()) == self.hparams.dimension + 2, "atlas size must be (batch, channel, width, height, depth)"
         assert not torch.isnan(intensities_template).any(), "NaN detected"
 
         # ---------- MODEL
-        self.model = MetamorphicAtlas2d(intensities_template, self.hparams.number_of_time_points,
-                                        self.hparams.downsampling_data, self.hparams.downsampling_grid,
-                                        self.hparams.latent_dimension__s, self.hparams.latent_dimension__a,
-                                        self.hparams.kernel_width__s, self.hparams.kernel_width__a,
-                                        initial_lambda_square__s=self.hparams.lambda_square__s,
-                                        initial_lambda_square__a=self.hparams.lambda_square__a,
-                                        noise_variance=self.hparams.noise_variance,
-                                        dropout=self.hparams.dropout)
+        self.model = MetamorphicAtlasDebbug3d(intensities_template, self.hparams.number_of_time_points,
+                                              self.hparams.downsampling_data, self.hparams.downsampling_grid,
+                                              self.hparams.latent_dimension__s, self.hparams.latent_dimension__a,
+                                              self.hparams.kernel_width__s, self.hparams.kernel_width__a,
+                                              initial_lambda_square__s=self.hparams.lambda_square__s,
+                                              initial_lambda_square__a=self.hparams.lambda_square__a,
+                                              noise_variance=self.hparams.noise_variance,
+                                              dropout=self.hparams.dropout)
 
         # ---------- ADDITIONAL HOLDERS
         self.mse = torch.nn.MSELoss(reduction='sum')
-        self.lambda_lagrangian = deepcopy(hparams.lambda_lagrangian)
-        self.kappa = deepcopy(hparams.kappa)
-        self.alpha_smoothing = deepcopy(hparams.alpha_smoothing)
-        self.moving_avg = None
+        self.nb_trains = dataset_train.nb_files
         self.ss_s_var = None
         self.ss_a_var = None
         self.attachment_loss = None
         self.last_device = None
-        self.previous_atlas = intensities_template.clone().detach()  # on CPU
         self.best_train_epoch = 0
         self.best_train_loss = np.inf
         self.aggregated_attachment_loss = []
+        self.affine = dataset_train.affine
 
     def check_hparams(self):
         available_types = [int, float, str, bool, torch.Tensor]
@@ -98,9 +92,6 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         assert isinstance(self.hparams.num_workers, int) and self.hparams.num_workers >= 0, "num workers must be int"
         assert self.hparams.which_print in ["train", "test", "both"], "which print value not correct"
 
-    def moving_averager(self, current, previous, is_first=False):
-        return current if is_first else self.alpha_smoothing * previous + (1-self.alpha_smoothing) * current
-
     def forward(self, x):
         return self.model.decode(x)
 
@@ -111,7 +102,6 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_target_intensities, _ = batch
         self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
-        space_size = float(reduce(mul, batch_target_intensities.size()[2:]))
 
         # ---------- ENCODE, SAMPLE AND DECODE
         means__s, log_variances__s, means__a, log_variances__a = self.model.encode(batch_target_intensities)
@@ -128,7 +118,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_latent__a = means__a + torch.zeros_like(means__a).normal_() * stds__a
         transformed_template = self.model(batch_latent__s, batch_latent__a)
 
-        # ---------- LOSS AVERAGED BY VOXEL
+        # ---------- LOSS AVERAGED BY PIXEL
         attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
@@ -137,14 +127,12 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        constrain = (attachment_loss / bts - space_size * self.kappa ** 2) / self.model.noise_variance
-        total_loss = self.lambda_lagrangian * constrain + (kl_loss__s + kl_loss__a) / bts
+        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / bts
 
         # ---------- LOGS
         self.logger.experiment.add_scalars('attachment_loss', {'train': attachment_loss}, self.global_step)
         self.logger.experiment.add_scalars('kl_loss__s', {'train': kl_loss__s}, self.global_step)
         self.logger.experiment.add_scalars('kl_loss__a', {'train': kl_loss__a}, self.global_step)
-        self.logger.experiment.add_scalars('lambda_lagrangian', {'train': self.lambda_lagrangian}, self.global_step)
         self.logger.experiment.add_scalars('total_loss', {'train': total_loss}, self.global_step)
         self.logger.experiment.add_scalars('ss_s_mean', {'train': ss_s_mean}, self.global_step)
         self.logger.experiment.add_scalars('ss_a_mean', {'train': ss_a_mean}, self.global_step)
@@ -155,8 +143,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         # ---------- KEEP TRACKS FOR PARAMS CUSTOMIZED UPDATES
         self.ss_a_var = float(ss_a_var)
         self.ss_s_var = float(ss_s_var)
-        self.moving_avg = float(
-            gpu_numpy_detach(self.moving_averager(constrain, self.moving_avg, not self.global_step)))
+        self.attachment_loss = float(gpu_numpy_detach(attachment_loss) / self.model.noise_variance / bts)
         self.aggregated_attachment_loss.append(float(gpu_numpy_detach(attachment_loss) / bts))
 
         return {'loss': total_loss}
@@ -165,15 +152,12 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         """
         Hyper-parameters update | batch_level
         """
-        # -------- LOG ATLAS VARIATIONS
-        atlas_delta = torch.sum(torch.abs(self.previous_atlas - self.model.template_intensities.cpu()))
-        self.logger.experiment.add_scalar('atlas_total_L1_variations', atlas_delta, self.global_step)
-        self.previous_atlas = self.model.template_intensities.clone().detach().cpu()
 
         # -------- UPDATE PARAMETERS IF NECESSARY
-        if self.trainer.current_epoch and self.global_step % self.hparams.update_every_batch == 0:
-            self.lambda_lagrangian *= float(np.clip(np.exp(self.moving_avg), 0.99, 1.01))
-            self.lambda_lagrangian = np.clip(self.lambda_lagrangian, 1e-6, 1e6)   # safety manual clipping
+        if self.trainer.current_epoch >= self.hparams.update_from_epoch >= 1:
+            self.model.noise_variance *= float(self.attachment_loss) / float(self.model.noise_dimension)
+            self.model.lambda_square__a = float(self.ss_a_var)
+            self.model.lambda_square__s = float(self.ss_s_var)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -194,7 +178,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_latent__a = means__a + torch.zeros_like(means__a).normal_() * stds__a
         transformed_template = self.model(batch_latent__s, batch_latent__a)
 
-        # ---------- LOSS AVERAGED BY VOXEL
+        # ---------- LOSS AVERAGED BY PIXEL
         attachment_loss = self.mse(transformed_template, batch_target_intensities)
         kl_loss__s = torch.sum(
             (means__s.pow(2) + log_variances__s.exp()) / self.model.lambda_square__s - log_variances__s + np.log(
@@ -203,8 +187,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        constrain = (attachment_loss / bts - space_size * self.kappa ** 2) / self.model.noise_variance
-        total_loss = self.lambda_lagrangian * constrain + (kl_loss__s + kl_loss__a) / bts
+        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / (bts * space_size)
 
         outputs = {
             'val_attachment_loss': attachment_loss,
@@ -243,7 +226,6 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         return {'val_loss': val_total_loss_mean, 'progress_bar': {'val_loss': val_total_loss_mean}}
 
     def configure_optimizers(self):
-
         base_opt = Adam(self.model.parameters(), lr=self.hparams.lr, betas=(self.hparams.b1, self.hparams.b2))
         optimizer = [base_opt]
         scheduler = [StepLR(base_opt, self.hparams.step_lr, gamma=self.hparams.step_decay)]
@@ -265,6 +247,8 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
         """
         Called on end of training epoch | save viz and nifti according to current epoch value
         """
+
+        # --------- VIZ
         if self.trainer.current_epoch == 0 or self.trainer.current_epoch % self.hparams.write_every_epoch == 0:
             if self.hparams.which_print == 'train':
                 self.save_viz(dataloader_name='train')
@@ -275,9 +259,9 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
                 self.save_viz(dataloader_name='test')
             else:
                 raise AssertionError
+            print('>> Saved nifti reconstructions.')
 
         # --------- SAVE ON TRAINING | ONLY FOR DEBUG
-
         if self.current_epoch % self.hparams.checkpoint_period == 0:
             aggregated_attachment_loss = np.mean(self.aggregated_attachment_loss)
 
@@ -313,7 +297,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
 
     def save_viz(self, dataloader_name):
         """
-        Saving nifti images
+        Saving nifti images |
         """
         # Randomly select images
         assert dataloader_name in ['train', 'test']
@@ -338,6 +322,7 @@ class GECOMetamorphicAtlas2dExecuter(pl.LightningModule):
             intensities_to_write = intensities_to_write.half()
         self.model.write(intensities_to_write, os.path.join(self.hparams.snapshots_path,
                                                             '{}__epoch_{}'.format(dataloader_name, self.current_epoch)),
+                         affine=self.affine.numpy(),
                          is_half=self.hparams.use_16bits)
 
 
@@ -347,7 +332,7 @@ if __name__ == '__main__':
     # GLOBAL VARIABLES
     # ==================================================================================================================
 
-    parser = argparse.ArgumentParser(description='GECO 2D Atlas MICCAI 2020.')
+    parser = argparse.ArgumentParser(description='Bayesian 3D Atlas MICCAI 2020 | LIGHTNING VERSION.')
     # action parameters
     parser.add_argument('--data_dir', type=str, default='Data/MICCAI_dataset',
                         help='Data directory root.')
@@ -358,9 +343,7 @@ if __name__ == '__main__':
     # Dataset parameters
     parser.add_argument('--dataset', type=str, default='mock', choices=['mock', 'brats', 'spheres'],
                         help='Dataset choice between mock, spheres and brats.')
-    parser.add_argument('--sliced_dim', type=int, default=2, choices=[0, 1, 2],
-                        help='Sliced dimension (without channel).')
-    parser.add_argument('--dimension', type=int, default=2, choices=[2], help='Dataset dimension.')
+    parser.add_argument('--dimension', type=int, default=3, choices=[3], help='Dataset dimension.')
     parser.add_argument('--downsampling_data', type=int, default=2**1, choices=[1, 2, 4],
                         help='2**downsampling of initial data.')
     # Model parameters
@@ -395,18 +378,14 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
     parser.add_argument("--b1", type=float, default=0.9, help="Adam first order momentum decay")
     parser.add_argument("--b2", type=float, default=0.999, help="Adam second order momentum decay")
-    parser.add_argument('--lambda_lagrangian', type=float, default=1., help='Lagrange init. coefficient for GECO loss.')
-    parser.add_argument('--kappa', type=float, default=float(np.sqrt(0.001)),
-                        help='Kappa sensitivity hyperparameter for reconstruction loss.')
-    parser.add_argument('--alpha_smoothing', type=float, default=0.99, help='GECO moving average loss.')
-    parser.add_argument('--update_every_batch', type=int, default=2, help='When to update lambda_lagrangian.')
     parser.add_argument('--step_lr', type=int, default=500, help='learning rate scheduler every epoch activation.')
     parser.add_argument('--step_decay', type=float, default=.75, help='learning rate scheduler decay value.')
+    parser.add_argument('--update_from_epoch', type=int, default=-1, help='When to update lambdas.')
     # Checkpoints parameters
     parser.add_argument("--checkpoint_period", type=int, default=2,
                         help="Period between checks for best training checkpoints.")
     # Storing data parameters
-    parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for checkpoints.')
+    parser.add_argument('--write_every_epoch', type=int, default=50, help='Number of iterations for imgs.')
     parser.add_argument('--row_log_interval', type=int, default=10, help='Log interval.')
     parser.add_argument('--which_print', type=str, default='both', choices=["train", "test", "both"],
                         help='From which dataset to print images.')
@@ -418,17 +397,17 @@ if __name__ == '__main__':
     HOME_PATH = '/network/lustre/dtlake01/aramis/users/paul.vernhet'
 
     # dataset-related args
-    args.experiment_prefix = '2D_rdm_slice{}_normalization_{}_reduction'.format(args.sliced_dim, args.downsampling_data)
+    args.experiment_prefix = '3D_rdm_slice_normalization_{}_reduction'.format(args.downsampling_data)
     if args.dataset == 'brats':
         args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d',
                                              '2_t1ce_normalized/0_reduction')
-        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dBraTs', args.experiment_prefix)
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '3dBraTs', args.experiment_prefix)
     elif args.dataset == 'mock':
         args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d', '1_eyes')
-        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dEyes', args.experiment_prefix)
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '3dEyes', args.experiment_prefix)
     else:
         args.data_tensor_path = os.path.join(HOME_PATH, 'Data/MICCAI_dataset/3_tensors3d', '0_spheres')
-        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '2dSpheres', args.experiment_prefix)
+        args.output_dir = os.path.join(HOME_PATH, 'Results/MICCAI', '3dSpheres', args.experiment_prefix)
 
     # batch-related args
     args.batch_size = min(args.batch_size, args.nb_train)
@@ -466,7 +445,7 @@ if __name__ == '__main__':
 
     log = ''
     args.model_signature = str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')
-    args.snapshots_path = os.path.join(args.output_dir, 'GECO_{}'.format(args.model_signature))
+    args.snapshots_path = os.path.join(args.output_dir, 'VAE_{}'.format(args.model_signature))
     os.makedirs(args.snapshots_path, exist_ok=True)
     print('\n>> Setting output directory to:\n', args.snapshots_path)
 
@@ -474,14 +453,14 @@ if __name__ == '__main__':
     # RUN TRAINING
     # ==================================================================================================================
 
-    GECO_metamorphic = GECOMetamorphicAtlas2dExecuter(args)
+    VAEDebbug_metamorphic = VariationalMetamorphicAtlasDebbug3dExecuter(args)
 
-    custom_early_stop_callback = None
+    custom_early_stopping = None
 
     trainer = pl.Trainer(gpus=([args.num_gpu] if args.cuda else None),
                          default_save_path=args.snapshots_path,
                          max_epochs=args.epochs,
-                         early_stop_callback=custom_early_stop_callback,
+                         early_stop_callback=custom_early_stopping,
                          use_amp=args.use_16bits,
                          amp_level=args.amp_level,
                          track_grad_norm=args.track_norms,
@@ -491,10 +470,11 @@ if __name__ == '__main__':
                          log_save_interval=args.write_every_epoch,
                          nb_sanity_val_steps=1,
                          print_nan_grads=False)
-    trainer.fit(GECO_metamorphic)
+    trainer.fit(VAEDebbug_metamorphic)
 
     logging.info(f'View tensorboard logs by running\ntensorboard --logdir {os.getcwd()}')
     logging.info('and going to http://localhost:6006 on your browser')
 
-    # to restore model : https://pytorch-lightning.readthedocs.io/en/latest/pytorch_lightning.trainer.training_io.html
+
+
 

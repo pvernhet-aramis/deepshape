@@ -28,7 +28,7 @@ python "${PYTHON_SCRIPT}" --data_dir "${DATADIR}" \
 --lambda_square__s 10. --lambda_square__a 10. --noise_variance 0.0025 \
 --epochs 10000 --batch_size 2 --nb_train 330 --nb_test 16 --num_workers 0 \
 --optimizer "Adam" --accumulate_grad_batch 8 --lr .001 --step_lr 2000 --update_from_epoch 7500 \
---write_every_epoch 5 --row_log_interval 2 --which_print "both" \
+--write_every_epoch 25 --row_log_interval 2 --which_print "train" \
 
 
 python "${PYTHON_SCRIPT}" --data_dir "${DATADIR}" \
@@ -38,5 +38,5 @@ python "${PYTHON_SCRIPT}" --data_dir "${DATADIR}" \
 --lambda_square__s 10. --lambda_square__a 10. --noise_variance 0.0025 \
 --epochs 10000 --batch_size 2 --nb_train 330 --nb_test 16 --num_workers 0 \
 --optimizer "Adam" --accumulate_grad_batch 8 --lr .0001 --step_lr 4000 --update_from_epoch 9000 \
---write_every_epoch 5 --row_log_interval 2 --which_print "both" \
+--write_every_epoch 25 --row_log_interval 2 --which_print "train" \
 

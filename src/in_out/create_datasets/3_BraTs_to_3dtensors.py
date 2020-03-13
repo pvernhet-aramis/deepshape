@@ -66,7 +66,6 @@ def launch(l_args):
     img = nib.load(path_in)
     img_affined = nib.Nifti1Image(img.get_data()[40:-40, 24:-24, 14:-13], img.affine)
     tensor_affined = torch.from_numpy(img_affined.get_data()).float()     # .to(DEVICE)
-    # H, W, D = tensor_affined.size()
     tensor_red = torch.nn.functional.interpolate(tensor_affined.unsqueeze(0).unsqueeze(0),
                                                  scale_factor=1./REDUCTION,
                                                  mode='trilinear',

@@ -789,8 +789,9 @@ class MetamorphicAtlas3d(nn.Module):
             target = observations[i].float().mul(255).cpu()
 
             # Get sliced image
-            images_i = [template.squeeze(1)[:, idx_slice], appearance.squeeze(1)[:, idx_slice], shape.squeeze(1)[:, idx_slice],
-                        metamorphosis.squeeze(1)[:, idx_slice], target.squeeze(1)[:, idx_slice]]
+            images_i = [template.squeeze(1)[:, :, :, idx_slice], appearance.squeeze(1)[:, :, :, idx_slice],
+                        shape.squeeze(1)[:, :, :, idx_slice],
+                        metamorphosis.squeeze(1)[:, :, :, idx_slice], target.squeeze(1)[:, :, :, idx_slice]]
             sliced_images += images_i
 
             # Convert to nifti all intermediate results
@@ -1016,8 +1017,8 @@ class DiffeomorphicAtlas3d(nn.Module):
             target = observations[i].float().mul(255).cpu()
 
             # Get sliced image
-            images_i = [template.squeeze(1)[:, idx_slice], shape.squeeze(1)[:, idx_slice],
-                        metamorphosis.squeeze(1)[:, idx_slice], target.squeeze(1)[:, idx_slice]]
+            images_i = [template.squeeze(1)[:, :, :, idx_slice], shape.squeeze(1)[:, :, :, idx_slice],
+                        metamorphosis.squeeze(1)[:, :, :, idx_slice], target.squeeze(1)[:, :, :, idx_slice]]
             sliced_images += images_i
 
             # Convert to nifti all intermediate results
@@ -1028,3 +1029,409 @@ class DiffeomorphicAtlas3d(nn.Module):
         sliced_images = torch.cat(sliced_images)
         save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
                    nrow=4, normalize=True, range=(0., float(gpu_numpy_detach(torch.max(sliced_images)))))
+
+
+# -------------------------------------------
+# Metamorphic Fixed Atlas
+
+
+class MetamorphicFixedAtlas3d(nn.Module):
+    """
+    Metamorphic Fixed Atlas compatible with dimension = 3
+    """
+
+    def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
+                 latent_dimension__s, latent_dimension__a,
+                 kernel_width__s, kernel_width__a,
+                 initial_lambda_square__s=1., initial_lambda_square__a=1., noise_variance=0.1 ** 2,
+                 dropout=.2):
+        nn.Module.__init__(self)
+
+        # ----------- SET PARAMETERS
+        self.decode_count = 0
+
+        assert 0 <= dropout <= 1, "Dropout value not compatible"
+        self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height, depth)
+        assert self.dimension == 3, "specific to dimension 3"
+        self.latent_dimension__s = latent_dimension__s
+        self.latent_dimension__a = latent_dimension__a
+
+        self.downsampling_data = downsampling_data               # measures to how much depth network can go
+        assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
+        self.downsampling_grid = downsampling_grid
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        self.grid_size = tuple(template_intensities.size()[2:])
+        self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
+
+        self.v_star_average = torch.zeros(tuple([self.dimension] + list(self.downsampled_grid_size)))
+        self.n_star_average = torch.zeros(tuple([1] + list(self.grid_size)))
+
+        self.number_of_time_points = number_of_time_points
+        self.dt = 1. / float(number_of_time_points - 1)
+
+        self.kernel_width__s = kernel_width__s
+        self.kernel_width__a = kernel_width__a
+
+        self.lambda_square__s = initial_lambda_square__s
+        self.lambda_square__a = initial_lambda_square__a
+        self.noise_dimension = reduce(mul, self.grid_size)
+        self.noise_variance = noise_variance
+        self.template_intensities = template_intensities     # does not require gradients, but must be on GPU
+        print('>> Template intensities are {} = {} parameters'.format((template_intensities.size()[1:]),
+                                                                      template_intensities.view(-1).size(0)))
+
+        # ----------- SET MODEL
+        if self.downsampling_data == 1:
+            # ---------- 5 convolutions available
+            self.encoder = Encoder3d__5_down(self.grid_size, latent_dimension__s, latent_dimension__a,
+                                             init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__5_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__5_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            else:
+                raise RuntimeError
+
+        elif self.downsampling_data == 2:
+            # ---------- 4 convolutions available
+            self.encoder = Encoder3d__4_down(self.grid_size, latent_dimension__s, latent_dimension__a,
+                                             init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__4_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            else:
+                raise RuntimeError
+
+        elif self.downsampling_data == 4:
+            # ---------- 3 convolutions available
+            self.encoder = Encoder3d__3_down(self.grid_size, latent_dimension__s, latent_dimension__a,
+                                             init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
+                                             init_var__a=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder3d__3_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+            if self.downsampling_grid == 1:
+                self.decoder__s = DeepDecoder3d__3_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 2:
+                self.decoder__s = DeepDecoder3d__2_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            elif self.downsampling_grid == 4:
+                self.decoder__s = DeepDecoder3d__1_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
+                                                      dropout=dropout)
+            else:
+                raise RuntimeError
+
+        else:
+            raise RuntimeError
+
+        print('>> Metamorphic 3D BayesianAtlas has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+
+    def encode(self, x):
+        """
+        x -> z
+        """
+        return self.encoder(x - self.template_intensities.detach())
+
+    def decode(self, s, a):
+        """
+        z -> y
+        """
+
+        # INIT
+        bts = s.size(0)
+        assert bts == a.size(0)
+        ntp = self.number_of_time_points
+        kws = self.kernel_width__s
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size                 # (tuple) now a tuple of length = dimension (=3)
+        dgs = self.downsampled_grid_size    # (tuple) now a tuple of length = dimension (=3)
+        dsf = self.downsampling_grid        # (int) assumed identical along all dimensions
+
+        v_star = self.decoder__s(s) - self.v_star_average.type(str(s.type()))
+        n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
+
+        # GAUSSIAN SMOOTHING
+        v = batched_vector_smoothing(v_star, kws, scaled=False)
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        # NORMALIZE
+        s_norm_squared = torch.sum(s.view(bts, -1) ** 2, dim=1)
+        a_norm_squared = torch.sum(a.view(bts, -1) ** 2, dim=1)
+        v_norm_squared = torch.sum(v * v_star, dim=tuple(range(1, dim + 2)))
+        n_norm_squared = torch.sum(n * n_star, dim=tuple(range(1, dim + 2)))
+        normalizer__s = torch.where(s_norm_squared > 1e-10,
+                                    torch.sqrt(s_norm_squared / v_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(s.type())))
+        normalizer__a = torch.where(a_norm_squared > 1e-10,
+                                    torch.sqrt(a_norm_squared / n_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(a.type())))
+
+        normalizer__s = normalizer__s.view(*([bts] + (dim+1)*[1])).expand(v.size())
+        normalizer__a = normalizer__a.view(*([bts] + (dim+1)*[1])).expand(n.size())
+
+        v = v * normalizer__s
+        n = n * normalizer__a
+        assert not torch.isnan(v).any(), "NaN detected in v"
+        assert not torch.isnan(n).any(), "NaN detected in n"
+
+        if self.decode_count < 10:
+            print('>> normalizer shape  = %.3E ; max(abs(v)) = %.3E' %
+                  (normalizer__s.detach().cpu().numpy().reshape(-1)[0], np.max(np.abs(v.detach().cpu().numpy()))))
+            print('>> normalizer appea  = %.3E ; max(abs(n)) = %.3E' %
+                  (normalizer__a.detach().cpu().numpy().reshape(-1)[0], np.max(np.abs(n.detach().cpu().numpy()))))
+            print('torch.max(n) = %.3f \n' % torch.max(n))
+            self.decode_count += 1
+
+        # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
+                           ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim+1)*[1]))
+
+        x = grid.clone() + v / float(2 ** ntp)
+        for t in range(ntp):
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
+        return intensities
+
+    def forward(self, s, a):
+        return self.decode(s, a)
+
+    def tamper_template_gradient(self, kw, lr, print_info=False):
+        pass
+
+    def write(self, observations, prefix, affine=None, is_half=False):
+        s, _, a, _ = self.encode(observations)
+
+        # INIT
+        bts = s.size(0)
+        assert bts == a.size(0)
+        ntp = self.number_of_time_points
+        kws = self.kernel_width__s
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size
+        dgs = self.downsampled_grid_size
+        dsf = self.downsampling_grid
+        idx_slice = gs[2] // 2
+        np_affine = affine if affine is not None else np.eye(4)
+
+        v_star = self.decoder__s(s) - self.v_star_average.type(str(s.type()))
+        n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
+
+        # GAUSSIAN SMOOTHING
+        v = batched_vector_smoothing(v_star, kws, scaled=False)
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        # NORMALIZE
+        s_norm_squared = torch.sum(s.view(bts, -1) ** 2, dim=1)
+        a_norm_squared = torch.sum(a.view(bts, -1) ** 2, dim=1)
+        v_norm_squared = torch.sum(v * v_star, dim=tuple(range(1, dim + 2)))
+        n_norm_squared = torch.sum(n * n_star, dim=tuple(range(1, dim + 2)))
+        normalizer__s = torch.where(s_norm_squared > 1e-10,
+                                    torch.sqrt(s_norm_squared / v_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(s.type())))
+        normalizer__a = torch.where(a_norm_squared > 1e-10,
+                                    torch.sqrt(a_norm_squared / n_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(a.type())))
+
+        normalizer__s = normalizer__s.view(*([bts] + (dim + 1) * [1])).expand(v.size())
+        normalizer__a = normalizer__a.view(*([bts] + (dim + 1) * [1])).expand(n.size())
+        v = v * normalizer__s
+        n = n * normalizer__a
+
+        # FLOW
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
+                           ).type(str(s.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim + 1) * [1]))
+
+        x = grid.clone() + v / float(2 ** ntp)
+        for t in range(ntp):
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+
+        # INTERPOLATE
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x).float()
+
+        # WRITE
+        template = self.template_intensities.float().mul(255).cpu()
+        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii.gz')
+
+        sliced_images = []
+        for i in range(bts):
+            # Get data
+            appearance = (self.template_intensities + n[i]).float().cpu().mul(255)
+            shape = batched_scalar_interpolation_adaptive(self.template_intensities.float().cpu(),
+                                                          x[i].float().unsqueeze(0).detach().cpu())[0].mul(255)
+            metamorphosis = intensities[i].float().mul(255).cpu()
+            target = observations[i].float().mul(255).cpu()
+
+            # Get sliced image
+            images_i = [template.squeeze(1)[:, :, :, idx_slice], appearance.squeeze(1)[:, :, :, idx_slice],
+                        shape.squeeze(1)[:, :, :, idx_slice],
+                        metamorphosis.squeeze(1)[:, :, :, idx_slice], target.squeeze(1)[:, :, :, idx_slice]]
+            sliced_images += images_i
+
+            # Convert to nifti all intermediate results
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance.squeeze()), np_affine), prefix + '_appearance.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii.gz')
+
+        sliced_images = torch.cat(sliced_images)
+        save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
+                   nrow=5, normalize=True, range=(0., float(gpu_numpy_detach(torch.max(sliced_images)))))
+
+
+# -------------------------------------------
+# MetamorphicDebbugAtlas
+
+
+class MetamorphicAtlasDebbug3d(nn.Module):
+    """
+    Metamorphic Atlas Debbug compatible with dimension = 3
+    """
+
+    def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
+                 kernel_width__s, kernel_width__a,
+                 noise_variance=0.1 ** 2,
+                 dropout=.2):
+        nn.Module.__init__(self)
+
+        # ----------- SET PARAMETERS
+        self.decode_count = 0
+
+        assert 0 <= dropout <= 1, "Dropout value not compatible"
+        self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height, depth)
+        assert self.dimension == 3, "specific to dimension 3"
+
+        self.downsampling_data = downsampling_data               # measures to how much depth network can go
+        assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
+        self.downsampling_grid = downsampling_grid
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        self.grid_size = tuple(template_intensities.size()[2:])
+        self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
+
+        self.number_of_time_points = number_of_time_points
+        self.dt = 1. / float(number_of_time_points - 1)
+
+        self.kernel_width__s = kernel_width__s
+        self.kernel_width__a = kernel_width__a
+        self.noise_dimension = reduce(mul, self.grid_size)
+        self.noise_variance = noise_variance
+        self.template_intensities = nn.Parameter(template_intensities)
+        print('>> Template intensities are {} = {} parameters'.format((template_intensities.size()[1:]),
+                                                                      template_intensities.view(-1).size(0)))
+
+        print('>> Metamorphic 3D BayesianAtlas has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+
+    def decode(self, input, v_star, n_star):
+        """
+        z -> y
+        """
+
+        # INIT
+        bts = input.size(0)
+        ntp = self.number_of_time_points
+        kws = self.kernel_width__s
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size                 # (tuple) now a tuple of length = dimension (=3)
+        dgs = self.downsampled_grid_size    # (tuple) now a tuple of length = dimension (=3)
+        dsf = self.downsampling_grid        # (int) assumed identical along all dimensions
+
+        # GAUSSIAN SMOOTHING
+        v = batched_vector_smoothing(v_star, kws, scaled=False)
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        assert not torch.isnan(v).any(), "NaN detected"
+        assert not torch.isnan(n).any(), "NaN detected"
+
+        # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
+                           ).type(str(n.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim+1)*[1]))
+
+        x = grid.clone() + v / float(2 ** ntp)
+        for t in range(ntp):
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
+        return intensities
+
+    def forward(self, input, v_star, n_star):
+        return self.decode(input, v_star, n_star)
+
+    def tamper_template_gradient(self, kw, lr, print_info=False):
+        pass
+
+    def write(self, observations, v_star, n_star, prefix, affine=None, is_half=False):
+
+        # INIT
+        bts = input.size(0)
+        ntp = self.number_of_time_points
+        kws = self.kernel_width__s
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size  # (tuple) now a tuple of length = dimension (=3)
+        dgs = self.downsampled_grid_size  # (tuple) now a tuple of length = dimension (=3)
+        dsf = self.downsampling_grid  # (int) assumed identical along all dimensions
+        idx_slice = gs[2] // 2
+        np_affine = affine if affine is not None else np.eye(4)
+
+        # GAUSSIAN SMOOTHING
+        v = batched_vector_smoothing(v_star, kws, scaled=False)
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        assert not torch.isnan(v).any(), "NaN detected"
+        assert not torch.isnan(n).any(), "NaN detected"
+
+        # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
+        grid = torch.stack(torch.meshgrid([torch.linspace(0.0, elt - 1.0, delt) for elt, delt in zip(gs, dgs)])
+                           ).type(str(n.type())).view(*([1, dim] + list(dgs))).repeat(*([bts] + (dim + 1) * [1]))
+
+        x = grid.clone() + v / float(2 ** ntp)
+        for t in range(ntp):
+            x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
+        intensities = batched_scalar_interpolation_adaptive(self.template_intensities + n, x)
+
+        # WRITE
+        template = self.template_intensities.float().mul(255).cpu()
+        nib.save(nib.Nifti1Image(gpu_numpy_detach(template.squeeze()), np_affine), prefix + '_template.nii.gz')
+
+        sliced_images = []
+        for i in range(bts):
+            # Get data
+            appearance = (self.template_intensities + n[i]).float().cpu().mul(255)
+            shape = batched_scalar_interpolation_adaptive(self.template_intensities.float().cpu(),
+                                                          x[i].float().unsqueeze(0).detach().cpu())[0].mul(255)
+            metamorphosis = intensities[i].float().mul(255).cpu()
+            target = observations[i].float().mul(255).cpu()
+
+            # Get sliced image
+            images_i = [template.squeeze(1)[:, :, :, idx_slice], appearance.squeeze(1)[:, :, :, idx_slice],
+                        shape.squeeze(1)[:, :, :, idx_slice],
+                        metamorphosis.squeeze(1)[:, :, :, idx_slice], target.squeeze(1)[:, :, :, idx_slice]]
+            sliced_images += images_i
+
+            # Convert to nifti all intermediate results
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(target.squeeze()), np_affine), prefix + '_target.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(shape.squeeze()), np_affine), prefix + '_shape.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(appearance.squeeze()), np_affine), prefix + '_appearance.nii.gz')
+            nib.save(nib.Nifti1Image(gpu_numpy_detach(metamorphosis.squeeze()), np_affine), prefix + '_metamorphosis.nii.gz')
+
+        sliced_images = torch.cat(sliced_images)
+        save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
+                   nrow=5, normalize=True, range=(0., float(gpu_numpy_detach(torch.max(sliced_images)))))

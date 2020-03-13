@@ -849,7 +849,6 @@ class DiffeomorphicAtlas2d(nn.Module):
             self.encoder = Encoder2d__4_down_O1(self.grid_size, latent_dimension__s,
                                              init_var__s=(initial_lambda_square__s / np.sqrt(latent_dimension__s)),
                                                 dropout=dropout)
-            self.decoder__a = DeepDecoder2d__4_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
             if self.downsampling_grid == 1:
                 self.decoder__s = DeepDecoder2d__4_up(latent_dimension__s, self.dimension, self.downsampled_grid_size,
                                                       dropout=dropout)
@@ -919,12 +918,11 @@ class DiffeomorphicAtlas2d(nn.Module):
         normalizer__s = normalizer__s.view(*([bts] + (dim+1)*[1])).expand(v.size())
 
         v = v * normalizer__s
-        assert not torch.isnan(v).any(), "NaN detected"
+        assert not torch.isnan(v).any(), "NaN detected v"
 
         if self.decode_count < 10:
             print('>> normalizer shape  = %.3E ; max(abs(v)) = %.3E' %
                   (normalizer__s.detach().cpu().numpy().reshape(-1)[0], np.max(np.abs(v.detach().cpu().numpy()))))
-            print('torch.max(n) = %.3f \n' % torch.max(n))
             self.decode_count += 1
 
         # FLOW | GRID (batch, dim, dgs_x, dgs_y, dgs_z)
@@ -935,6 +933,7 @@ class DiffeomorphicAtlas2d(nn.Module):
         for t in range(ntp):
             x += batched_vector_interpolation_adaptive(x - grid, x, dsf)
         intensities = batched_scalar_interpolation_adaptive(self.template_intensities, x)    #
+        assert not torch.isnan(intensities).any(), "NaN detected intensities"
         return intensities
 
     def forward(self, s):
@@ -950,7 +949,6 @@ class DiffeomorphicAtlas2d(nn.Module):
         bts = s.size(0)
         ntp = self.number_of_time_points
         kws = self.kernel_width__s
-        kwa = self.kernel_width__a
         dim = self.dimension
         gs = self.grid_size
         dgs = self.downsampled_grid_size
@@ -995,6 +993,183 @@ class DiffeomorphicAtlas2d(nn.Module):
 
             # Get sliced image
             images_i = [template.squeeze(1), shape.squeeze(1),
+                        metamorphosis.squeeze(1), target.squeeze(1)]
+            sliced_images += images_i
+
+        sliced_images = torch.cat(sliced_images)
+        save_image(sliced_images.unsqueeze(1), prefix + '__reconstructions.pdf',
+                   nrow=4, normalize=True, range=(0., float(gpu_numpy_detach(torch.max(sliced_images)))))
+
+
+# -------------------------------------------
+# Autoencoder 2D Atlas
+
+
+class AutoencoderAtlas2d(nn.Module):
+    """
+    Autoencoder Atlas compatible with dimension = 2
+    """
+
+    def __init__(self, template_intensities, number_of_time_points, downsampling_data, downsampling_grid,
+                 latent_dimension__a,
+                 kernel_width__a,
+                 initial_lambda_square__a=1., noise_variance=0.1 ** 2,
+                 dropout=.2):
+        nn.Module.__init__(self)
+
+        # ----------- SET PARAMETERS
+        self.decode_count = 0
+
+        assert 0 <= dropout <= 1, "Dropout value not compatible"
+        self.dimension = len(template_intensities.size()) - 2      # (batch, channel, width, height)
+        assert self.dimension == 2, "specific to dimension 2"
+        self.latent_dimension__a = latent_dimension__a
+
+        self.downsampling_data = downsampling_data               # measures to how much depth network can go
+        assert self.downsampling_data in [1, 2, 4], "Only supports initial downsampling by 1, 2 and 4"
+        self.downsampling_grid = downsampling_grid
+        assert self.downsampling_grid in [1, 2, 4], "Only supports grid downsampling by 1, 2 and 4"
+        self.grid_size = tuple(template_intensities.size()[2:])
+        self.downsampled_grid_size = tuple([gs // self.downsampling_grid for gs in self.grid_size])
+
+        self.n_star_average = torch.zeros(tuple([1] + list(self.grid_size)))
+
+        self.number_of_time_points = number_of_time_points
+        self.dt = 1. / float(number_of_time_points - 1)
+
+        self.kernel_width__a = kernel_width__a
+
+        self.lambda_square__a = initial_lambda_square__a
+        self.noise_dimension = reduce(mul, self.grid_size)
+        self.noise_variance = noise_variance
+        self.template_intensities = nn.Parameter(template_intensities)
+        print('>> Template intensities are {} = {} parameters'.format((template_intensities.size()[1:]),
+                                                                      template_intensities.view(-1).size(0)))
+
+        # ----------- SET MODEL
+        if self.downsampling_data == 1:
+            # ---------- 5 convolutions available
+            self.encoder = Encoder2d__5_down_O1(self.grid_size, latent_dimension__a,
+                                                init_var__s=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                                dropout=dropout)
+            self.decoder__a = DeepDecoder2d__5_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+
+        elif self.downsampling_data == 2:
+            # ---------- 4 convolutions available
+            self.encoder = Encoder2d__4_down_O1(self.grid_size, latent_dimension__a,
+                                                init_var__s=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                                dropout=dropout)
+            self.decoder__a = DeepDecoder2d__4_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+
+        elif self.downsampling_data == 4:
+            # ---------- 3 convolutions available
+            self.encoder = Encoder2d__3_down(self.grid_size, latent_dimension__a,
+                                             init_var__s=(initial_lambda_square__a / np.sqrt(latent_dimension__a)),
+                                             dropout=dropout)
+            self.decoder__a = DeepDecoder2d__3_up(latent_dimension__a, 1, self.grid_size, dropout=dropout)
+
+        else:
+            raise RuntimeError
+
+        print('>> Autoencoer 2D BayesianAtlas has {} parameters'.format(sum([len(elt.view(-1)) for elt in self.parameters()])))
+
+    def encode(self, x):
+        """
+        x -> z
+        """
+        return self.encoder(x - self.template_intensities.detach())
+
+    def decode(self, a):
+        """
+        z -> y
+        """
+
+        # INIT
+        bts = a.size(0)
+        ntp = self.number_of_time_points
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size                 # (tuple) now a tuple of length = dimension (=2)
+        dgs = self.downsampled_grid_size    # (tuple) now a tuple of length = dimension (=2)
+        dsf = self.downsampling_grid        # (int) assumed identical along all dimensions
+
+        n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
+
+        # GAUSSIAN SMOOTHING
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        # NORMALIZE
+        a_norm_squared = torch.sum(a.view(bts, -1) ** 2, dim=1)
+
+        n_norm_squared = torch.sum(n * n_star, dim=tuple(range(1, dim + 2)))
+
+        normalizer__a = torch.where(a_norm_squared > 1e-10,
+                                    torch.sqrt(a_norm_squared / n_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(a.type())))
+
+        normalizer__a = normalizer__a.view(*([bts] + (dim+1)*[1])).expand(n.size())
+
+        n = n * normalizer__a
+        assert not torch.isnan(n).any(), "NaN detected n"
+
+        if self.decode_count < 10:
+            print('>> normalizer appea  = %.3E ; max(abs(n)) = %.3E' %
+                  (normalizer__a.detach().cpu().numpy().reshape(-1)[0], np.max(np.abs(n.detach().cpu().numpy()))))
+            print('torch.max(n) = %.3f \n' % torch.max(n))
+            self.decode_count += 1
+
+        intensities = self.template_intensities + n
+        assert not torch.isnan(intensities).any(), "NaN detected intensities"
+        return intensities
+
+    def forward(self, a):
+        return self.decode(a)
+
+    def tamper_template_gradient(self, kw, lr, print_info=False):
+        pass
+
+    def write(self, observations, prefix, is_half=False):
+        a, _ = self.encode(observations)
+
+        # INIT
+        bts = a.size(0)
+        ntp = self.number_of_time_points
+        kwa = self.kernel_width__a
+        dim = self.dimension
+        gs = self.grid_size
+        dgs = self.downsampled_grid_size
+        dsf = self.downsampling_grid
+
+        n_star = self.decoder__a(a) - self.n_star_average.type(str(a.type()))
+
+        # GAUSSIAN SMOOTHING
+        n = batched_scalar_smoothing(n_star, kwa, scaled=False)
+
+        # NORMALIZE
+        a_norm_squared = torch.sum(a.view(bts, -1) ** 2, dim=1)
+        n_norm_squared = torch.sum(n * n_star, dim=tuple(range(1, dim + 2)))
+        normalizer__a = torch.where(a_norm_squared > 1e-10,
+                                    torch.sqrt(a_norm_squared / n_norm_squared),
+                                    torch.from_numpy(np.array(0.0)).float().type(str(a.type())))
+
+        normalizer__a = normalizer__a.view(*([bts] + (dim + 1) * [1])).expand(n.size())
+        n = n * normalizer__a
+
+        # INTERPOLATE
+        intensities = (self.template_intensities + n).float()
+
+        # WRITE
+        template = self.template_intensities.float().mul(255).cpu()
+
+        sliced_images = []
+        for i in range(bts):
+            # Get data
+            appearance = (n[i]).float().cpu().mul(255)
+            metamorphosis = intensities[i].float().mul(255).cpu()
+            target = observations[i].float().mul(255).cpu()
+
+            # Get sliced image
+            images_i = [template.squeeze(1), appearance.squeeze(1),
                         metamorphosis.squeeze(1), target.squeeze(1)]
             sliced_images += images_i
 

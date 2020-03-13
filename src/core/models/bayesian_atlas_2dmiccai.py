@@ -171,7 +171,6 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
         batch_target_intensities, _ = batch
         self.last_device = batch_target_intensities.device.index
         bts = batch_target_intensities.size(0)
-        space_size = reduce(mul, batch_target_intensities.size()[2:])
 
         # ---------- ENCODE, SAMPLE AND DECODE
         means__s, log_variances__s, means__a, log_variances__a = self.model.encode(batch_target_intensities)
@@ -192,7 +191,7 @@ class VariationalMetamorphicAtlas2dExecuter(pl.LightningModule):
             (means__a.pow(2) + log_variances__a.exp()) / self.model.lambda_square__a - log_variances__a + np.log(
                 self.model.lambda_square__a))
 
-        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / (bts * space_size)
+        total_loss = (attachment_loss / self.model.noise_variance + kl_loss__s + kl_loss__a) / bts
 
         outputs = {
             'val_attachment_loss': attachment_loss,
